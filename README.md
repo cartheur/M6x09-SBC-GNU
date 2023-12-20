@@ -3,7 +3,8 @@ GNU and CodeWarrior based sources for all `x09` architecture development code
 
 ### CEMU
 
-* Obtained from [here](http://www.evenson-consulting.com/swtpc/Downloads.htm).
+* Clone the repo and use the link to start the program. Make sure the configuration when first starting the application points to the PATH folder.
+* More information can be found [here](http://www.evenson-consulting.com/swtpc/Downloads.htm).
 
 ### Large-File storage
 
