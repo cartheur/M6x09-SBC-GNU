@@ -1,0 +1,252 @@
+                        * NAM BOOT
+                        *
+                        * BASED ON BOOT CP/68 PROGRAM FOR ICOM 8 INCH FLOPPY DISK PROGRAM BY J. HEMENWAY 1979
+                        * 
+                        * MODIFIED BY ROBERTO SANCHO TO SUPPORT MF68 DISKS ON SWTPC SIMH EMULATION
+                        * APR/2022
+                        *
+                        * UPDATED BY MIKE DOUGLAS TO RUN ON REAL HARDWARE JUL/2022
+                        *
+                        * SAVE AS TRANSIENT COMMAND AFTER LOADING BOOT.S19 INTO RAM WITH
+                        *    SAVE BOOT.CMD,$2400,$2578,$256B
+                        *
+                        * DISK GEOMETRY: 35 TRACKS X 18 SECTORS X 128 BYTES
+                        * TRACK 0 HAS SECTORS NUMBERED 0,1,2,4..18 (NO SECTOR 3, FIRST SECTOR IS ZERO)
+                        * TRACK 1..34 HAS SECTORS NUMBERED 1,2..18
+                        * THIS IS THE SAME LAYOUT AS FLEX 1.0 ON MF68 
+                        *
+                        * TRACK 0: SECTORS 0,1,2: HOLDS THIS BOOT PROGRAM
+                        * TRACK 0: SECTOR 4..18: DIRECTORY
+                        * TRACK 1..34: DATA SECTORS FOR FILES
+                        *
+000b                    FDRSC	EQU	$0B		RESTORE
+001b                    FDSKI	EQU	$1B		SEEK
+008c                    FDRDC	EQU	$8C		READ A SECTOR
+                        
+8014                    DRVREG	EQU	$8014		DRIVE REGISTER
+8018                    CMDREG	EQU	$8018		COMMAND REGISTER	
+8019                    TRKREG	EQU	$8019		TRACK REGISTER
+801a                    SECREG	EQU	$801A		SECTOR REGISTER
+801b                    DATREG	EQU	$801B		DATA REGISTER
+                        *
+                        * BOOT BEGINS HERE
+                        *
+2400                    	ORG $2400
+                        *	
+2400 bd 25 29           BOOT	JSR	DRIVE		SETUP DRIVE 0
+2403 86 0b              	LDAA	#FDRSC		ISSUE RESTORE COMMAND
+2405 b7 80 18           	STAA	CMDREG
+2408 bd 25 20           	JSR	DEL30U		30 USEC DELAY
+240b b6 80 18           START2	LDAA	CMDREG
+240e 85 01              	BITA	#1		BUSY?
+2410 26 f9              	BNE	START2		YES
+                        *
+                        * NOW GET SYSTEM LINK INFORMATION
+                        *
+2412 86 02              	LDAA	#2		SECTOR=2
+2414 c6 00              	LDAB	#0		TRACK=0	 
+2416 ce 25 78           	LDX	#SECBUF
+2419 bd 24 b5           	JSR	RDSEC		READ LINK SECTOR
+241c ce 25 7c           	LDX	#SECBUF+4
+241f ff 25 fc           	STX	INDEX		INIT BUFFER INDEX
+2422 ce 25 78           	LDX	#SECBUF
+2425 e6 7c              	LDAB	124,X		GET LAST TRACK
+2427 a6 7d              	LDAA	125,X		GET LAST SECTOR
+2429 f7 25 fa           	STAB	LTS
+242c b7 25 fb           	STAA	LTS+1
+242f e6 7a              	LDAB	122,X		GET FIRST TRACK
+2431 27 1d              	BEQ	NOTLNK		BR TO NOT LINKED ERROR MSG
+2433 a6 7b              	LDAA	123,X		GET FIRST SECTOR
+2435 f7 25 f8           	STAB	FTS
+2438 b7 25 f9           	STAA	FTS+1
+243b bd 24 b5           	JSR	RDSEC		READ FIRST SECTOR
+                        *
+                        * NOW LOAD SYSTEM FILE INTO MEMORY
+                        *
+243e 8d 40              BOOT1	BSR	GETBYT		GET A DATA BYTE FROM FILE
+2440 81 16              	CMPA	#$16		TRANSFER-ADDRESS?
+2442 26 12              	BNE	BOOT2		NO
+2444 8d 3a              	BSR	GETBYT
+2446 b7 26 02           	STAA	ADDRES		GET TRANSFER ADDRESS
+2449 8d 35              	BSR	GETBYT
+244b b7 26 03           	STAA	ADDRES+1
+244e 20 ee              	BRA	BOOT1		GET NEW DATA FRAME
+                        *	
+2450 ce 25 5e           NOTLNK	LDX	#NBMSG		MESSAGE NOT LINKED
+2453 7e 25 4b           	JMP	PRERR		GO TO PRINT IT AND EXIT	
+                        *
+2456 81 02              BOOT2	CMPA	#$02		DATA FRAME?
+2458 26 21              	BNE	BOOT4		NO
+245a 8d 24              	BSR	GETBYT
+245c b7 25 fe           	STAA	SAVEX		GET ADDRESS
+245f 8d 1f              	BSR	GETBYT
+2461 b7 25 ff           	STAA	SAVEX+1
+2464 8d 1a              	BSR	GETBYT
+2466 b7 26 04           	STAA	FCNT		GET FRAME COUNTER
+2469 8d 15              BOOT3	BSR	GETBYT		GET DATA BYTE
+246b fe 25 fe           	LDX	SAVEX
+246e a7 00              	STAA	0,X		STORE BYTE
+2470 08                 	INX
+2471 ff 25 fe           	STX	SAVEX
+2474 7a 26 04           	DEC	FCNT
+2477 26 f0              	BNE	BOOT3
+2479 20 c3              	BRA	BOOT1		GET NEW DATA FRAME
+                        *
+247b fe 26 02           BOOT4	LDX	ADDRES		GET TRANSFER ADDRESS
+247e 6e 00              	JMP	0,X		GO THERE
+                        *
+                        * READ A DATA BYTE FROM SYSTEM FILE
+                        * RETURN BYTE IN A REGISTER
+                        *
+2480 fe 25 fc           GETBYT	LDX	INDEX
+2483 8c 25 f8           	CPX	#SECBUF+128	NEED NEW SECTOR?
+2486 27 07              	BEQ	GETSEC		YES
+2488 a6 00              GETB1	LDAA	0,X		GET BYTE 
+248a 08                 	INX
+248b ff 25 fc           	STX	INDEX		MOVE POINTER
+248e 39                 	RTS
+248f f6 25 f8           GETSEC 	LDAB	FTS		CURRENT TRACK
+2492 b6 25 f9           	LDAA	FTS+1		CURRENT SECTOR
+2495 b1 25 fb           	CMPA	LTS+1		CHECK FOR LAST SECTOR 
+2498 26 07              	BNE	GETS2		NOT LAST
+249a f1 25 fa           	CMPB	LTS
+249d 26 02              	BNE	GETS2		NOT LAST
+249f 20 da              	BRA	BOOT4		EOF-GOTO TRANSFER ADDRESS
+24a1 ce 25 78           GETS2	LDX	#SECBUF
+24a4 e6 00              	LDAB	0,X		GET FWD LINK TRACK
+24a6 a6 01              	LDAA	1,X		GET FWD LINK SECTOR
+24a8 f7 25 f8           	STAB	FTS		UPDATE CURRENT T/S
+24ab b7 25 f9           	STAA	FTS+1
+24ae 8d 05              	BSR	RDSEC
+24b0 ce 25 7c           	LDX	#SECBUF+4
+24b3 20 d3              	BRA	GETB1
+                        *
+                        * SINGLE SECTOR READ ROUTINE
+                        *
+                        * DRIVE=0, TRACK=B, SECTOR=A, SECBUF=X
+                        *
+24b5 36                 RDSEC	PSHA			SAVE SECTOR
+24b6 37                 	PSHB			SAVE TRACK
+24b7 ff 26 00           	STX	SAVEX2		SAVE BUFFER POINTER
+24ba bd 25 29           	JSR	DRIVE		SETUP DRIVE 0
+24bd fe 26 00           	LDX	SAVEX2		RESTORE BUFFER POINTER
+24c0 86 05              	LDAA	#5		FIVE RETRIES
+24c2 b7 26 05           	STAA	RCNT
+24c5 33                 RDSEC2	PULB			GET TRACK
+24c6 32                 	PULA			GET SECTOR
+24c7 fe 26 00           	LDX	SAVEX2		GET BUFFER ADRESS
+24ca 36                 	PSHA
+24cb 37                 	PSHB		 	PUT BACK ON STACK 
+24cc bd 25 05           RDSEC3	JSR	SEEK
+24cf 86 8c              	LDAA	#FDRDC	 	READ COMMAND
+24d1 b7 80 18           	STAA	CMDREG
+24d4 bd 25 20           	JSR	DEL30U		30 USEC WAIT
+24d7 c6 80              	LDAB	#128		SECTOR SIZE=128
+24d9 b6 80 18           READ1	LDAA	CMDREG
+24dc 85 02              	BITA	#$02		DATA REG FULL?
+24de 26 06              	BNE	READ2		YES
+24e0 85 01              	BITA	#1		BUSY?
+24e2 26 f5              	BNE	READ1		YES
+24e4 20 09              	BRA	READ3		ERROR
+24e6 b6 80 1b           READ2	LDAA	DATREG		GET A BYTE
+24e9 a7 00              	STAA	0,X		STORE IN BUFFER
+24eb 08                 	INX
+24ec 5a                 	DECB
+24ed 26 ea              	BNE	READ1		DO AGAIN
+24ef b6 80 18           READ3	LDAA	CMDREG
+24f2 85 01              	BITA	#1		BUSY?
+24f4 26 f9              	BNE	READ3		YES
+24f6 84 1c              READ4	ANDA	#$1C		MASK OF STATUS BITS
+24f8 27 08              	BEQ	READ5		GOOD?
+24fa 7a 26 05           	DEC	RCNT		NO, TRY AGAIN?
+24fd 26 c6              	BNE	RDSEC2
+24ff 7e 25 48           QUIT	JMP	ERROR		FAILED 5 TIMES, ERROR
+2502 33                 READ5	PULB			CLEAN STACK
+2503 32                 	PULA
+2504 39                 	RTS			GOOD READ
+                        *
+                        * SEEK TRACK=B, SECTOR=A
+                        *
+2505 f1 80 19           SEEK	CMPB	TRKREG		ON TRACK?
+2508 27 13              	BEQ	SEEK2		YES
+250a f7 80 1b           	STAB	DATREG		NO
+250d 8d 11              	BSR	DEL30U
+250f c6 1b              	LDAB	#FDSKI		SEEK COMMAND
+2511 f7 80 18           	STAB	CMDREG
+2514 8d 0a              	BSR	DEL30U
+2516 f6 80 18           SEEK1	LDAB	CMDREG
+2519 c5 01              	BITB	#1		BUSY?
+251b 26 f9              	BNE	SEEK1		WAIT UNTIL DONE
+251d b7 80 1a           SEEK2	STAA	SECREG		SET SECTOR
+                        *
+                        * 30 USEC DELAY FOR CONTROLLER CHIP
+                        *
+2520 08                 DEL30U	INX
+2521 09                 	DEX
+2522 08                 	INX
+2523 09                 	DEX
+2524 08                 	INX
+2525 09                 	DEX
+2526 08                 	INX
+2527 09                 	DEX
+2528 39                 	RTS
+                        *
+                        * SELECT DRIVE 0
+                        *
+2529 f6 80 18           DRIVE	LDAB	CMDREG
+252c c4 80              	ANDB	#$80		READY? 
+252e 27 13              	BEQ	DRIVE1		YES
+2530 ce 00 00           	LDX	#0000
+2533 08                 DRV0	INX
+2534 26 fd              	BNE	DRV0
+2536 08                 DRV1	INX
+2537 26 fd              	BNE	DRV1
+2539 f6 80 18           	LDAB	CMDREG
+253c c4 80              	ANDB	#$80		READY?
+253e 27 03              	BEQ	DRIVE1		YES
+2540 7e 25 48           DRIVE0	JMP	ERROR		NO, ERROR
+2543 7f 80 14           DRIVE1	CLR	DRVREG		SET DRIVE=0
+2546 20 d8              	BRA	DEL30U
+                        *
+                        * ERROR
+                        *
+2548 ce 25 51           ERROR	LDX	#EMSG
+254b bd e0 7e           PRERR	JSR	$E07E		DISPLAY ERROR MSG USING SWTBUG PRINT STRING ROUTINE (PDATA1) 
+254e 7e e1 13           	JMP	$E113		GO TO SWTBUG PROMPT
+2551 44 49 53 4b 20 45  EMSG	FCC	'DISK ERROR'
+52 52 4f 52
+255b 0d 0a 04           	FCB	$0D,$0A,$04
+255e 4e 4f 54 20 4c 49  NBMSG	FCC	'NOT LINKED'
+4e 4b 45 44
+2568 0d 0a 04           	FCB	$0D,$0A,$04
+                        
+256b                    MAXADD	EQU	*		THIS VALUE MUST BE < $257B
+                        	
+                        *
+                        * ENTRY POINT WHEN EXECUTED AS A CP68 TRANSIENT COMMAND
+                        *
+256b ce 25 74           CSTART	LDX	#PRERR2		CHANGE PRERR CALL FROM SWTBUG PRINT STRING ROUTINE ERR2 
+256e ff 25 4c           	STX	PRERR+1 
+2571 7e 24 00           	JMP	BOOT		NORMAL START 
+2574 3f                 PRERR2	SWI	PRTMSG		PRINT STRING USING CP68 SVC CALL
+2575 31                 	FCB	$31	
+2576 3f                 	SWI	WARMS		CP68 WARM START
+2577 1f                 	FCB	$1F
+                        	
+                        *
+                        * VARIABLES:
+                        *
+2578                    SECBUF	RMB	128		SECTOR BUFFER
+25f8                    FTS	RMB	2		CURRENT T/S 
+25fa                    LTS	RMB	2		LAST T/S
+25fc                    INDEX	RMB	2		PTR TO NEXT BYTE TO GET FROM SECTOR BUFFER
+25fe                    SAVEX	RMB	2		TEMP
+2600                    SAVEX2	RMB	2		TEMP
+2602                    ADDRES	RMB	2		TRANSFER ADDRES (BOOTED PROG ENTRY POINT)
+2604                    FCNT	RMB	1		COUNT OF BYTES IN LOADED PROG FRAME
+2605                    RCNT	RMB	1		RETRY COUNT
+                        	
+                        	END
+
+
+Number of errors 0
