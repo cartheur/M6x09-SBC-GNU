@@ -1,0 +1,1340 @@
+
+
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    1
+
+
+                               abs
+                     *
+                     * Monitor ROM for booting UniFLEX and handling the UniFLEX
+                     * interrupt processing.
+                     *
+                     * Macro definitions
+                     seti      macro
+                               orcc   #$50
+                               endm
+                     clri      macro
+                               andcc  #!$50
+                               endm
+                     
+                     * System equates
+               F800  romadr    equ    $f800     starting rom address
+               FF00  rompag    equ    $ff00     resident rom page
+               FFF0  vector    equ    $fff0     vector addresses
+               BE80  romstk    equ    $be80     rom stack start
+               FFF0  datbox    equ    $fff0     dat box address
+                     * System space segment definitions
+               0000  sysseg    equ    0         system tables
+               0005  txtseg    equ    5         system text
+               0006  NSPG      equ    6         Number System Pages
+               000B  usrseg    equ    11        stack segment
+               000C  bufseg    equ    12        I/O buffers
+               000D  tfrseg    equ    13        transfer buffers
+               000E  iodseg    equ    14        I/O device segment
+               000F  romseg    equ    15        rom
+                     * Hard defined physical addresses
+               0E0F  ramap     equ    $0e0f     8K of ram at address $00000
+               F1F0  romap     equ    $f1f0     I/O and ROM at $fe000
+               F3F2  nomap     equ    $f3f2     black hole segments (void space)
+                     * Memory map definitions
+               0010  segadr    equ    16        number of segments per address space
+               0100  segmax    equ    256       max number of segments
+               1000  segsiz    equ    4096      segment size in bytes
+                     
+                     * low ram interrupt vectors
+  0000                         org    sysseg<<12
+  0000               irqvec    rmb    2         maskable interrupt
+  0002               swivec    rmb    2         swi 1
+  0004               sw2vec    rmb    2         swi 2
+  0006               sw3vec    rmb    2         swi 3
+  0008               nmivec    rmb    2         non-maskable interrupt
+  000A               frqvec    rmb    2         fast interrupt
+                     * low memory system storage
+  000C               cputyp    rmb    2         cpu type
+  000E               usrtop    rmb    1         current user segment
+  000F               kernal    rmb    1         kernal/user state (-1 = user address space)
+  0010               chpflg    rmb    1         change process flag
+  0011               chtask    rmb    2         change process vector
+  0013               corcnt    rmb    1         core segment count
+  0014               lstmem    rmb    2         mem table end marker
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    2
+
+                     
+                     * System and global memory maps
+  0100                         org    (sysseg<<12)+$100
+  0100               sysmap    rmb    segadr    system memory map
+  0110               cormap    rmb    segmax    available memory list
+                     
+                     * User block definitions
+  BF40                         org    (usrseg<<12)+$f40
+               BF40  sysstk    equ    *         system stack starts here
+  BF40               usp       rmb    2         user stack pointer
+  BF42               uswiv     rmb    2         user swi vector
+  BF44               usrmap    rmb    segadr    user task memory map
+  BF54               usercc    rmb    1         condition codes
+  BF55               userd     rmb    2         D register
+  BF57               userx     rmb    2         X register
+  BF59               userpc    rmb    2         PC register
+  BF5B               userpb    rmb    1         sys call post byte
+                     
+                     * interrupt vector definitions
+  FFF0                         org    vector
+  FFF0 0000                    fdb    0         reserved
+  FFF2 FF5D                    fdb    swi3
+  FFF4 FF37                    fdb    swi2
+  FFF6 FF91                    fdb    firq
+  FFF8 FFC1                    fdb    irq
+  FFFA FFA9                    fdb    swi
+  FFFC FFB5                    fdb    nmi
+  FFFE FFCD                    fdb    reset
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    3
+
+
+                     *
+                     * Rom code starts here
+                     *
+  F800                         org    romadr
+                     *
+                     * I/O Vectors
+                     *
+  F800 FBD8                    fdb    pdata     Print string (X)
+  F802 FBEB                    fdb    hexbyt    Print single hex byte
+  F804 FBE3                    fdb    outsp     Print single space
+  F806 FC09                    fdb    inch      Read & echo one character
+                     
+  F808 CC   0E0F     rinit     ldd    #ramap    reload the ram map
+  F80B B7   FFFB               sta    datbox+usrseg
+  F80E F7   FFF0               stb    datbox+sysseg set up user and system segments
+  F811 10CE BE80               lds    #romstk   set rom stack
+  F815 86   F3                 lda    #nomap>>8 fill system map with blackholes
+  F817 C6   10                 ldb    #segadr   get length of map
+  F819 8E   0110               ldx    #sysmap+segadr point to map
+  F81C A7   82       rinit2    sta    0,-x      stuff into map cell
+  F81E 5A                      decb             dec the count
+  F81F 26   FB                 bne    rinit2
+  F821 CC   F1F0               ldd    #romap    complete the initial map
+  F824 ED   0E                 std    iodseg,x  set rom and io
+  F826 CC   0E0F               ldd    #ramap
+  F829 A7   0B                 sta    usrseg,x  set user segment
+  F82B 97   0E                 sta    usrtop
+  F82D E7   84                 stb    sysseg,x  set system segment
+  F82F 4F                      clra             init the direct page register
+  F830 1F   8B                 tfr    a,dp
+  F832 97   0C                 sta    cputyp    clear cpu type
+  F834 97   10                 sta    chpflg    clear change task flag
+  F836 97   13                 sta    corcnt    zero core count
+  F838 43                      coma
+  F839 97   0F                 sta    kernal    set non-kernal space
+  F83B BD   FC2F               jsr    tinit     init the terminal
+  F83E 8E   FC45               ldx    #hello    point to string
+  F841 BD   FBD8               jsr    pdata     print the string
+  F844 108E 0000               ldy    #irqvec   point to int vectors
+  F848 8E   FB8F               ldx    #unhand   and unhandeled routine
+  F84B C6   06                 ldb    #6        set count
+  F84D AF   A1       rinit4    stx    0,y++     store vector
+  F84F 30   07                 leax   7,x       point to next panic
+  F851 5A                      decb
+  F852 26   F9                 bne    rinit4
+  F854 9F   11                 stx    chtask    set change task vector
+  F856 8E   FB9D               ldx    #unswi2
+  F859 BF   BF42               stx    uswiv     set swi 2 vector
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    4
+
+
+                     *
+                     * Main monitor loop (command processor)
+                     *
+                     * temp equates
+               001C  dlen      equ    28        temp size in bytes
+               FFE4  ascii     equ    0-dlen    ascii data buffer
+               FFF4  segmnt    equ    16-dlen   active segment number
+               FFF5  offset    equ    17-dlen   active segment offset
+               FFF7  limit     equ    19-dlen   extended address limits
+               FFFA  count     equ    22-dlen   local count field
+               FFFB  digit     equ    23-dlen   temp
+               FFFC  lowadr    equ    24-dlen   dump address (low addr)
+               FFFE  hiadr     equ    26-dlen
+                     * Loop starts here
+  F85C 33   E4       montor    leau   0,s       mark stack
+  F85E 32   E8 1C              leas   dlen,s    make temp space
+  F861 8E   FC67     nxtcmd    ldx    #prompt   point to prompt string
+  F864 BD   FBD8               jsr    pdata     output it
+  F867 BD   FC09               jsr    inch      get response
+  F86A BD   FBE3               jsr    outsp     output space
+  F86D 8E   F882               ldx    #commnd   point to command table
+  F870 8D   05                 bsr    search    search for command
+  F872 AD   98 01              jsr    [1,x]     execute command
+  F875 20   EA                 bra    nxtcmd    repeat
+                     * Search command table for command
+  F877 A1   84       search    cmpa   0,x       is it this guy?
+  F879 27   06                 beq    searc2
+  F87B 30   03                 leax   3,x       skip this one
+  F87D 6D   84                 tst    0,x       end of list?
+  F87F 26   F6                 bne    search
+  F881 39            searc2    rts              return
+                     * Command table
+  F882 0D            commnd    fcb    $d        carriage return
+  F883 F8EC                    fdb    dummy
+  F885 43                      fcb    'C        Configure command
+  F886 F89A                    fdb    figlef
+  F888 44                      fcb    'D        8" Disk boot
+  F889 F8C6                    fdb    dboot
+  F88B 57                      fcb    'W        Boot from Winchester
+  F88C F8D6                    fdb    wdboot
+  F88E 45                      fcb    'E        Examine system memory
+  F88F F8ED                    fdb    examine
+  F891 4D                      fcb    'M        Modify System memory
+  F892 FC78                    fdb    modify
+  F894 4A                      fcb    'J        Jump to program in system memory
+  F895 FCC9                    fdb    jumpprg
+  F897 00                      fcb    0         end of table
+  F898 F8E6                    fdb    badcmd
+                     
+                     * Configure the system command
+  F89A BD   FB01     figlef    jsr    config    do configuration
+  F89D 96   13                 lda    corcnt    get core count
+  F89F 8B   08                 adda   #NSPG+2   add in system core count
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    5
+
+  F8A1 A7   5A                 sta    count,u   save it
+  F8A3 CC   0000               ldd    #0        set count to 0
+  F8A6 8B   04       figle2    adda   #4        covert to decimal
+  F8A8 19                      daa
+  F8A9 C9   00                 adcb   #0        add in carry
+  F8AB 6A   5A                 dec    count,u
+  F8AD 26   F7                 bne    figle2    finished?
+  F8AF 5D                      tstb             more than 99K of memory?
+  F8B0 27   09                 beq    figle4
+  F8B2 1E   89                 exg    a,b       do upper digit now
+  F8B4 8B   30                 adda   #$30
+  F8B6 BD   FC20               jsr    outch     output it
+  F8B9 1E   98                 exg    b,a       get low back
+  F8BB BD   FBEB     figle4    jsr    hexbyt    output byte
+  F8BE BD   FBE3               jsr    outsp     output space
+  F8C1 86   4B                 lda    #'K       output 'K'
+  F8C3 7E   FC20               jmp    outch
+                     
+                     * 8" Disk boot command
+  F8C6 BD   FB01     dboot     jsr    config    configure system
+  F8C9 17   00D7     dboot0    lbsr   loadip    load the ipl sector
+  F8CC 1026 031B               lbne   hexbyt    output bad status
+  F8D0 10CE BF40               lds    #sysstk   setup UniFLEX stack
+  F8D4 6E   84                 jmp    0,x       go do the boot
+                     *
+                     * 5" Winchester (WD1000) boot
+                     *
+  F8D6 BD   FB01     wdboot    jsr    config    configure the system
+  F8D9 BD   FA57               jsr    wdload    load the WD boot sector
+  F8DC 1026 030B               lbne   hexbyt    jump if error
+  F8E0 10CE BF40               lds    #sysstk   set up UniFLEX stack
+  F8E4 6E   84                 jmp    0,x       go do the boot
+                     * Bad command
+  F8E6 8E   FC6A     badcmd    ldx    #sorry    point to string
+  F8E9 BD   FBD8               jsr    pdata     output it
+  F8EC 39            dummy     rts              return
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    6
+Memory Examine Command                              
+
+
+                     *
+                     * Examine memory (system)
+                     *
+  F8ED               examine
+  F8ED 8D   6F                 bsr    getadr    get low address
+  F8EF 25   5E                 bcs    exam99
+  F8F1 ED   5C                 std    lowadr,u  save low limit
+  F8F3 86   2D                 lda    #'-
+  F8F5 BD   FC20               jsr    outch
+  F8F8 8D   64                 bsr    getadr    get high address
+  F8FA 25   53                 bcs    exam99
+  F8FC ED   5E                 std    hiadr,u   save high limit
+                     *
+                     * Print one line (16 bytes) of data
+                     *
+ >F8FE BD   F952     exam10    jsr    pcrlf     start a new print line
+  F901 A6   5C                 lda    lowadr,u  print address
+  F903 BD   FBEB               jsr    hexbyt
+  F906 A6   5D                 lda    lowadr+1,u
+  F908 BD   FBEB               jsr    hexbyt
+  F90B BD   FBE3               jsr    outsp
+  F90E BD   FBE3               jsr    outsp
+  F911 AE   5C                 ldx    lowadr,u
+  F913 C6   10                 ldb    #16       print 16 bytes
+  F915 34   04                 pshs   b
+  F917 A6   80       exam20    lda    ,x+       get next byte to print
+  F919 BD   FBEB               jsr    hexbyt
+  F91C BD   FBE3               jsr    outsp
+  F91F 6A   E4                 dec    0,s       done?
+  F921 26   F4                 bne    exam20    no - go back
+  F923 AE   5C                 ldx    lowadr,u  now print characters
+  F925 BD   FBE3               jsr    outsp
+  F928 BD   FBE3               jsr    outsp
+  F92B C6   10                 ldb    #16
+  F92D E7   E4                 stb    0,s
+  F92F A6   80       exam30    lda    ,x+       get next byte
+  F931 81   20                 cmpa   #$20      printable?
+  F933 25   04                 blo    exam35    no
+  F935 81   7F                 cmpa   #$7F
+  F937 25   02                 blo    exam40    go print character
+  F939 86   2E       exam35    lda    #'.       print period for unprintable
+  F93B BD   FC20     exam40    jsr    outch     print character
+  F93E 6A   E4                 dec    0,s       done?
+  F940 26   ED                 bne    exam30
+  F942 32   61                 leas   1,s       clean up stack
+  F944 BD   FC01               jsr    inchck    abort if character struck
+  F947 25   06                 bcs    exam99
+  F949 AF   5C                 stx    lowadr,u  update address
+  F94B AC   5E                 cmpx   hiadr,u   any more?
+  F94D 23   AF                 bls    exam10    yes - go to it
+  F94F 8D   01       exam99    bsr    pcrlf
+  F951 39                      rts
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    7
+Memory Examine Command                              
+
+                     *
+                     * pcrlf - print carriage return/line feed
+                     *
+  F952 34   16       pcrlf     pshs   d,x       save registers
+  F954 8E   F95C               ldx    #CRLF
+  F957 BD   FBD8               jsr    pdata
+  F95A 35   96                 puls   d,x,pc    return
+  F95C 0D 00         CRLF      fcc    $d,0
+                     *
+                     * get 4 hex digit address
+                     *   return value in D
+                     *
+  F95E C6   04       getadr    ldb    #4        number of digits
+  F960 34   04                 pshs   b
+  F962 CC   0000               ldd    #0        starting value
+  F965 34   06                 pshs   d
+  F967 8D   1D       getad1    bsr    gethex    get a hex digit (in B)
+  F969 25   16                 bcs    getad9    jump if error
+  F96B 34   02                 pshs   a
+  F96D EC   61                 ldd    1,s       fix up value
+  F96F 58                      aslb
+  F970 49                      rola
+  F971 58                      aslb
+  F972 49                      rola
+  F973 58                      aslb
+  F974 49                      rola
+  F975 58                      aslb
+  F976 49                      rola
+  F977 EA   E0                 orb    ,s+
+  F979 ED   E4                 std    ,s
+  F97B 6A   62                 dec    2,s       done?
+  F97D 26   E8                 bne    getad1
+  F97F 1C   FE                 clc
+  F981 35   06       getad9    puls   d         get value
+  F983 32   61                 leas   1,s       clean up stack
+  F985 39                      rts              return
+                     *
+                     * gethex - get one hex digit
+                     *
+  F986 BD   FC09     gethex    jsr    inch      read character
+  F989 81   30                 cmpa   #'0       check for legal digit
+  F98B 25   13                 blo    gethx9
+  F98D 81   39                 cmpa   #'9
+  F98F 23   0A                 bls    gethx1
+  F991 81   41                 cmpa   #'A       legal digit?
+  F993 25   0B                 blo    gethx9    no - error
+  F995 81   46                 cmpa   #'F
+  F997 22   07                 bhi    gethx9
+  F999 8B   09                 adda   #9        add bias
+  F99B 84   0F       gethx1    anda   #$0F      strip ASCII stuff
+  F99D 1C   FE                 clc
+  F99F 39                      rts              all done - no error
+  F9A0 1A   01       gethx9    sec              illegal
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    8
+Memory Examine Command                              
+
+  F9A2 39                      rts              exit
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page    9
+DMF3 Floppy Bootstrap                               
+
+
+                     *
+                     * Disk boot code
+                     *
+                     *
+                     *   disk bootstrap program
+                     *
+               0001  btsec     equ    1         sector number of ipl record
+               0200  seclen    equ    512       disk sector length
+               B000  btadr     equ    usrseg<<12 logical bootstrap address
+               1000  realad    equ    !(ramap<<4)&$F000 physical address of bootstrap
+                     *
+                     *   DMAF3 1791 disk controller definitions
+                     *
+               F000  DMF3      equ    $F000     Base addr for DMF3
+               F020  cmmnd     equ    DMF3+$20  disk controller command register
+               F020  status    equ    DMF3+$20  disk controller status register
+               F021  track     equ    DMF3+$21  disk controller track register
+               F022  sector    equ    DMF3+$22  disk controller sector register
+               F023  data      equ    DMF3+$23  disk controller data register
+                     *
+                     *   DMAF3 1791 disk controller command definitions
+                     *
+               00D8  frcint    equ    %11011000 force interrupt command
+               0009  restore   equ    %00001001 restore command
+               008C  read      equ    %10001100 single sector read command
+                     *
+                     *   DMAF3 1791 disk controller status bits
+                     *
+               0080  drdy      equ    %10000000 1 => drive not ready
+               0010  skerr     equ    %00010000 1 => seek error
+               0008  nrf       equ    %00001000 1 => no record found error
+               0004  crc       equ    %00000100 1 => crc error
+               0002  lsd       equ    %00000010 1 => lost data error
+               0001  dbusy     equ    %00000001 1 => controller busy
+                     *
+                     *   DMAF3 drive select latch definitions
+                     *
+               F024  drive     equ    DMF3+$24  drive select latch (inverted)
+               0020  dnsty     equ    %00100000 1 => double density selected
+               0001  select    equ    %00000001 1 => drive zero selected
+                     *
+                     *   DMAF3 address select latch definitions
+                     *
+               F025  latch     equ    DMF3+$25  extended address latch
+               000F  extaddr   equ    %00001111 extended address select lines
+                     *
+                     *   DMAF3 6844 DMA controller definitions
+                     *
+               F000  address   equ    DMF3+$00  DMA address register (zero)
+               F002  dmcnt     equ    DMF3+$02  DMA count register (zero)
+               F010  channel   equ    DMF3+$10  DMA channel control register
+               F014  priority  equ    DMF3+$14  DMA priority control register
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   10
+DMF3 Floppy Bootstrap                               
+
+               F015  interrupt equ    DMF3+$15  DMA interrupt control register
+               F016  chain     equ    DMF3+$16  DMA data chain register
+                     *
+                     *   reset the stack and set up direct addressing
+                     *
+  F9A3               loadip    seti   irq,firq  disable irq and firq
+  F9A5 86   08                 lda    #8        set retry count
+  F9A7 C6   21                 ldb    #(dnsty+select) set density and drive select
+  F9A9 34   0E                 pshs   d,dp      save the direct page register
+  F9AB 86   F0                 lda    #DMF3>>8  load the msp of the address
+  F9AD 1F   8B                 tfr    a,dp      set direct addressing
+               00F0            setdp  DMF3>>8   and tell the assembler
+                     *
+                     *   quiesce the dma (in case it is active)
+                     *
+  F9AF 86   00       trybt     lda    #0        clear all relevant DMA registers
+  F9B1 97   14                 sta    priority  stuff priority register
+  F9B3 97   10                 sta    channel   clear channel control register
+  F9B5 97   16                 sta    chain     and clear data chain register
+  F9B7 0D   10                 tst    channel   then read channel control
+  F9B9 0D   15                 tst    interrupt and interrupt control registers
+                     *
+                     *   disable irq from the 1791 controller
+                     *
+  F9BB A6   61                 lda    1,s       get density
+  F9BD 84   3F                 anda   #%00111111
+  F9BF 85   20                 bita   #%00100000
+  F9C1 27   02                 beq    dpat
+  F9C3 8A   40                 ora    #%01000000
+  F9C5 97   24       dpat      sta    drive     stuff into drive select latch
+  F9C7 86   D8                 lda    #frcint   load a force interrupt command
+  F9C9 17   0083               lbsr   diskcmd   send the command to te disk
+                     *
+                     *   read 1791 status latch and see if drive comes up ready
+                     *
+  F9CC 108E 36B0               ldy    #14000    allow up to 3 seconds for drive ready
+ >F9D0 17   007E     dmchk     lbsr   delay     delay 174 uSeconds
+  F9D3 96   20                 lda    status    check 1791 drive ready status bit
+  F9D5 2A   06                 bpl    dorest    if ready, go do the restore
+  F9D7 31   3F                 leay   -1,y      decrement delay count
+  F9D9 26   F5                 bne    dmchk     loop if not so
+  F9DB 20   3C                 bra    loadxit
+                     *
+                     *   restore the drive and wait for it to complete
+                     *
+  F9DD 86   09       dorest    lda    #restore  load a restore command
+ >F9DF 17   006D               lbsr   diskcmd   and attempt to restore the drive
+  F9E2 96   20       waitrst   lda    status    pick up 1791 status register
+  F9E4 85   01                 bita   #dbusy    check for the busy bit
+  F9E6 26   FA                 bne    waitrst   loop until busy goes away
+  F9E8 85   10                 bita   #skerr    test for seek error
+  F9EA 26   2D                 bne    loadxit
+                     *
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   11
+DMF3 Floppy Bootstrap                               
+
+                     *   set up the dma count and address registers
+                     *
+  F9EC CC   1000               ldd    #realad   load real boot address
+  F9EF D7   25                 stb    latch     set extended address latch
+  F9F1 DD   00                 std    address   stuff into DMA address register
+  F9F3 CC   0200               ldd    #seclen   load sector length
+  F9F6 DD   02                 std    dmcnt     stuff into DMA count register
+                     *
+                     *   set up the dma mode and control registers
+                     *
+  F9F8 86   08                 lda    #8        set up four channel mode
+  F9FA 97   16                 sta    chain
+  F9FC CC   0001               ldd    #1        set up steal mode
+  F9FF 97   10                 sta    channel   store into channel control register
+  FA01 D7   14                 stb    priority  stuff into priority register
+                     *
+                     *   now fire up 1791 controller to do a single sector read
+                     *
+  FA03 CC   0001               ldd    #btsec    load boot sector number
+  FA06 DD   21                 std    track     set track number to zero
+  FA08 86   8C                 lda    #read     load single sector read
+  FA0A 8D   43                 bsr    diskcmd   and fire up the controller
+                     *
+                     *   wait for the command to complete
+                     *
+  FA0C 8E   C350               ldx    #50000    allow up to 500 mS delay
+  FA0F 0D   10       wfboot    tst    channel   test channel control register
+  FA11 2B   2C                 bmi    checkit   if negative, boot is complete
+  FA13 30   1F                 leax   -1,x      decrement the wait counter
+  FA15 26   F8                 bne    wfboot    loop waiting for boot to complete
+  FA17 96   20                 lda    status    pick up status byte
+                     *
+                     *   load has failed - first shut down the DMA
+                     *
+  FA19 34   02       loadxit   pshs   a         push the offending status
+  FA1B 86   00                 lda    #0        turn off all channels
+  FA1D 97   14                 sta    priority  by clearing the priority register
+  FA1F 0D   10                 tst    channel   read channel register then
+  FA21 0D   15                 tst    interrupt clear any interrupt indication
+                     *
+                     *   then shut down the 1791 and exit
+                     *
+  FA23 86   D8                 lda    #frcint   force an interrupt
+  FA25 97   20                 sta    cmmnd     write into the command register
+  FA27 6A   61                 dec    1,s       dec retry count
+  FA29 27   0B                 beq    rlex
+  FA2B 35   02                 puls   a         get status
+  FA2D A6   61                 lda    1,s       get density
+  FA2F 88   20                 eora   #dnsty    toggle density
+  FA31 A7   61                 sta    1,s       set on stack
+  FA33 7E   F9AF               jmp    trybt     retry
+  FA36 86   20       rlex      lda    #dnsty    deselect all drives
+  FA38 97   24                 sta    drive     to turn off the lights
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   12
+DMF3 Floppy Bootstrap                               
+
+  FA3A 4D                      tsta             set zero false to indicate failure
+  FA3B 35   02                 puls   a         clean stack
+  FA3D 35   C8                 puls   u,dp,pc
+                     *
+                     *   boot has completed - check for any sicknesses along the way
+                     *
+  FA3F 96   20       checkit   lda    status    pick up disk controller status
+  FA41 85   8E                 bita   #nrf+crc+lsd+drdy test for error conditions
+  FA43 26   D4                 bne    loadxit   exit if error on boot sector
+  FA45 A6   61                 lda    1,s       get density
+  FA47 97   24                 sta    drive     for the internal boot
+  FA49 8E   B000               ldx    #btadr    load bootstrap address
+  FA4C 4F                      clra             set equal to show boot complete
+  FA4D 35   8E                 puls   d,dp,pc
+                     *
+                     *   send a command to the 1791 and wait for it to respond
+                     *
+  FA4F 97   20       diskcmd   sta    cmmnd     store the disk command
+  FA51 86   20       delay     lda    #32       set up a delay counter
+  FA53 4A            del       deca             decrement the delay count
+  FA54 26   FD                 bne    del       hang in there for the count
+  FA56 39                      rts
+               0000            setdp  0
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   13
+WD1000 Bootstrap                                    
+
+
+                     *
+                     * driver equates
+                     *
+               F000  board     equ    DMF3      board decodes from f300 to f3ff (?)
+               F025  extadr    equ    board+$25 74LS374 latch for 4 extended address
+                     *                                      lines (bits 0-3),
+               0010  chan1     equ    %00010000 (bits 4-5),
+               F050  auxdecode equ    board+$50 74LS139 for misc. decodes
+               F051  wd1000_res equ   auxdecode+1 winchester software reset
+               F000  dma       equ    board+$00 68B44 dma controller
+                     *   memory register definitions:
+               F004  dmac1a    equ    dma+$04   channel 1 address register
+               F006  dmac1c    equ    dma+$06   channel 1 byte count register
+                     *
+                     *   channel control register definitions:
+                     *
+               F011  dmacc1    equ    dma+$11   channel 1 control register
+                     *
+                     *   priority control register definition:
+                     *
+               F014  dmaprc    equ    dma+$14   priority control register
+                     *
+                     *   interrupt control register definition:
+                     *
+               F015  dmaicr    equ    dma+$15   interrupt control register
+                     *
+                     *   data chain register definition:
+                     *
+               F016  dmadcr    equ    dma+$16   data chain control register
+               F030  wd1000    equ    board+$30 WD1000 5-1/4 winchester controller
+               F030  wd_data   equ    wd1000+0  data register
+               F031  wd_error  equ    wd1000+1  error register (read only)
+                     *                                      bit 7 bad block detect
+                     *                                      bit 6 CRC error, data field
+                     *                                      bit 5 CRC error, ID field
+                     *                                      bit 4 ID not found
+                     *                                      bit 3 unused
+                     *                                      bit 2 Aborted Command
+                     *                                      bit 1 TR000 (track zero) error
+                     *                                      bit 0 DAM not found
+               F031  wd_wr_pre equ    wd1000+1  write precomp (write only)
+               F032  wd_sec_cnt equ   wd1000+2  sector count (during format)
+               F033  wd_sec_num equ   wd1000+3  sector number
+               F034  wd_cyl_low equ   wd1000+4  cylinder (low byte)
+                     *                                      C0-C7
+               F035  wd_cyl_hi equ    wd1000+5  cylinder (high byte)
+                     *                                      C8-C9
+               F036  wd_sdh    equ    wd1000+6  size/drive/head
+                     *                                      bit 7 XX,
+                     *                                      bit 6,5 sector size (256,512,128)
+                     *                                      bit 4,3 drive select (0,1,2,3)
+                     *                                      bit 2,1,0 head select (0-7)
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   14
+WD1000 Bootstrap                                    
+
+               0000  wd_secsize equ   %00000000 256 byte sectors
+               0020  wd_sz_512 equ    %00100000 512 byte sectors
+               0000  wd_sel0   equ    %00000000 select drive zero
+               0008  wd_sel1   equ    %00001000 select drive one
+               0010  wd_sel2   equ    %00010000 select drive two
+               0018  wd_sel3   equ    %00011000 select drive three
+               F037  wd_status equ    wd1000+7  status (read only)
+                     *                                      bit 7 busy
+                     *                                      bit 6 ready
+                     *                                      bit 5 write fault
+                     *                                      bit 4 seek complete
+                     *                                      bit 3 data request
+                     *                                      bit 2,1 unused
+                     *                                      bit 0 error (code in wd_error
+               F037  wd_cmd    equ    wd1000+7  command (write only)
+               0016  wd_restore equ   %00010110 restore with 3ms step rate
+               0070  wd_seek   equ    %01110000 seek with 10us step rate
+               0028  wd_read   equ    %00101000 read sector DMA
+                     *
+                     * Boot loader
+                     *
+  FA57 CC   0000     wdload    ldd    #0        shut down DMA just in case
+  FA5A FD   F014               std    dmaprc
+  FA5D 7D   F051               tst    wd1000_res reset controller
+  FA60 C6   0A                 ldb    #10       give the drive some time
+  FA62 8E   0000     wdld0     ldx    #0000
+  FA65 B6   F037     wdld1     lda    wd_status check for "Ready"
+  FA68 81   50                 cmpa   #$50
+  FA6A 27   0B                 beq    wdld2     jump if ready
+  FA6C 30   1F                 leax   -1,x      try again
+  FA6E 26   F5                 bne    wdld1
+  FA70 5A                      decb
+  FA71 26   EF                 bne    wdld0     keep trying
+  FA73 C6   FF                 ldb    #$FF      set error condition code
+  FA75 20   7D                 bra    wdexit
+  FA77 86   A0       wdld2     lda    #$20+$80  set up drive 0, 512 byte sectors, ECC
+  FA79 B7   F036               sta    wd_sdh
+  FA7C 86   16                 lda    #wd_restore send restore command
+  FA7E B7   F037               sta    wd_cmd
+  FA81 B6   F037     w5ld3     lda    wd_status wait for drive ready
+  FA84 2B   FB                 bmi    w5ld3
+  FA86 B6   F037               lda    wd_status check for errors
+  FA89 85   01                 bita   #$01
+  FA8B 26   67                 bne    wdexit
+                     *
+                     * Read block 1 into physical $01000
+                     *
+  FA8D CC   0000               ldd    #0        Cylinder 0
+  FA90 B7   F035               sta    wd_cyl_hi
+  FA93 F7   F034               stb    wd_cyl_low
+  FA96 C6   01                 ldb    #1        Sector 1
+  FA98 F7   F033               stb    wd_sec_num
+  FA9B 86   00                 lda    #$00      set up DMA address
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   15
+WD1000 Bootstrap                                    
+
+  FA9D 8A   10                 ora    #chan1    set for channel 1
+  FA9F B7   F025               sta    extadr    set high 4 bits
+  FAA2 CC   1000               ldd    #realad   Mapped to $B000
+  FAA5 FD   F004               std    dmac1a    set channel 1 address
+  FAA8 CC   0200               ldd    #512      set up count
+  FAAB FD   F006               std    dmac1c
+  FAAE 86   00                 lda    #$00      set for DMA read
+  FAB0 B7   F011               sta    dmacc1    set up channel control register
+  FAB3 B7   F015               sta    dmaicr
+  FAB6 86   08                 lda    #$08      set four channel DMA
+  FAB8 B7   F016               sta    dmadcr
+  FABB 86   02                 lda    #$02      set up channel 1 DMA
+  FABD B7   F014               sta    dmaprc
+  FAC0 86   28                 lda    #wd_read  send READ SECTOR command
+  FAC2 B7   F037               sta    wd_cmd
+  FAC5 C6   0A                 ldb    #10
+  FAC7 8E   1388     wdld4     ldx    #5000     suitable wait time
+  FACA B6   F037     wdld45    lda    wd_status check status
+  FACD 2A   0B                 bpl    wdld5     jump when command complete
+  FACF 30   1F                 leax   -1,x
+  FAD1 26   F7                 bne    wdld45
+  FAD3 5A                      decb
+  FAD4 26   F1                 bne    wdld4
+  FAD6 C6   FF                 ldb    #$FF      set error return
+  FAD8 20   1A                 bra    wdexit
+  FADA 85   01       wdld5     bita   #$01      check for errors
+  FADC 26   16                 bne    wdexit    jump if error
+  FADE C6   0A                 ldb    #10
+  FAE0 8E   1388     wdld6     ldx    #5000
+  FAE3 B6   F011     wdld65    lda    dmacc1    wait for DMA completion
+  FAE6 2B   0B                 bmi    wdld7
+  FAE8 30   1F                 leax   -1,x
+  FAEA 26   F7                 bne    wdld65
+  FAEC 5A                      decb
+  FAED 26   F1                 bne    wdld6
+  FAEF C6   FF                 ldb    #$FF      return error
+  FAF1 20   01                 bra    wdexit
+  FAF3 4F            wdld7     clra             set no error
+  FAF4 34   01       wdexit    pshs   cc        save condition codes
+  FAF6 8E   B000               ldx    #$B000    set bootstrap address
+  FAF9 CC   0000               ldd    #0        shut down DMA
+  FAFC FD   F014               std    dmaprc
+  FAFF 35   81                 puls   cc,pc     return
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   16
+System Configuration                                
+
+
+                     *
+                     * Configure the system
+                     *
+                     * equates
+               000F  mapmsk    equ    $0f       segment map mask
+               99AA  tstpat    equ    $99AA     memory test pattern
+               D0F0  tstloc    equ    (tfrseg<<12)+$f0 test position
+               0001  useres    equ    $0001     user resident page
+               0000  sysres    equ    $0000     system resident page
+                     * code starts here
+  FB01 8E   99AA     config    ldx    #tstpat   setup pattern
+  FB04 108E 0210               ldy    #cormap+segmax setup page table pointer
+  FB08 C6   FF                 ldb    #segmax-1 setup max page number
+  FB0A 8D   5C       check     bsr    getpag    map in a page
+  FB0C BF   D0F0               stx    tstloc    write test pattern
+  FB0F BC   D0F0               cmpx   tstloc    is memory there?
+  FB12 26   14                 bne    nomem
+  FB14 34   04                 pshs   b         save count
+  FB16 8D   50       check2    bsr    getpag    map in next page
+  FB18 F7   D0F1               stb    tstloc+1
+  FB1B C0   01                 subb   #1        dec count by 1
+  FB1D 24   F7                 bcc    check2
+  FB1F 35   04                 puls   b
+  FB21 8D   45                 bsr    getpag    reselect the page
+  FB23 F1   D0F1               cmpb   tstloc+1  is memory there?
+  FB26 27   01                 beq    gotmem
+                     * here if no memory
+  FB28 4F            nomem     clra             set page number to zero
+                     * here for memory found
+  FB29 A7   A2       gotmem    sta    0,-y      store into mem table
+  FB2B C0   01                 subb   #1        dec the count
+  FB2D 24   DB                 bcc    check
+  FB2F 30   A4                 leax   0,y       point to start of table
+                     * setup system address space
+  FB31 6F   84       syssup    clr    sysres,x  clear out system and user pages
+  FB33 6F   01                 clr    useres,x
+  FB35 108E 0105               ldy    #sysmap+txtseg point to user segment
+  FB39 C6   06                 ldb    #NSPG     set length
+  FB3B 8D   33       syssu2    bsr    getnxt    get next segment
+  FB3D 27   3B                 beq    memfal    crash if no memory!
+  FB3F A7   A0                 sta    0,y+      save in map
+  FB41 5A                      decb             dec the count
+  FB42 26   F7                 bne    syssu2
+  FB44 0F   13                 clr    corcnt    set core count to zero
+  FB46 108E 0110               ldy    #cormap   point to core map
+  FB4A 8D   24       syssu4    bsr    getnxt    get next page
+  FB4C 27   06                 beq    syssu5    no more?
+  FB4E A7   A0                 sta    0,y+      save in table
+  FB50 0C   13                 inc    corcnt    bump core counter
+  FB52 20   F6                 bra    syssu4    repeat
+  FB54 109F 14       syssu5    sty    lstmem    save last mem pointer
+  FB57 8E   0100               ldx    #sysmap   point to system map
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   17
+System Configuration                                
+
+  FB5A 108E FFF0               ldy    #datbox   point to datbox
+  FB5E C6   10                 ldb    #segadr   get segment count
+  FB60 A6   80       syssu6    lda    0,x+      reload datbox from map
+  FB62 A7   A0                 sta    0,y+
+  FB64 5A                      decb             dec the count
+  FB65 26   F9                 bne    syssu6
+  FB67 39                      rts              return
+                     * map in a memory page
+  FB68 1F   98       getpag    tfr    b,a       get page number
+  FB6A 88   0F                 eora   #mapmsk   invert the page mask
+  FB6C B7   FFFD               sta    datbox+tfrseg map into address space
+  FB6F 39                      rts              return
+                     * get next valid memory segment
+  FB70 8C   0210     getnxt    cmpx   #cormap+segmax end of map?
+  FB73 27   04                 beq    getnx2
+  FB75 A6   80                 lda    0,x+      get next page
+  FB77 27   F7                 beq    getnxt    keep looking if zero
+  FB79 39            getnx2    rts              return
+                     * No memory panic
+  FB7A 8D   44       memfal    bsr    panic     report panic
+  FB7C 4E 6F 74 20             fcc    'Not Enough Memory!',0
+  FB80 45 6E 6F 75   
+  FB84 67 68 20 4D   
+  FB88 65 6D 6F 72   
+  FB8C 79 21 00      
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   18
+Terminal I/O and Default Interrupts                 
+
+
+                     *
+                     * Terminal I/O and bad interrupt handlers
+                     *
+                     * Report unhandled interrupts
+  FB8F 8D   2F       unhand    bsr    panic
+  FB91 49 52 51 20             fcc    'IRQ ',0
+  FB95 00            
+  FB96 8D   28                 bsr    panic
+  FB98 53 57 49 20             fcc    'SWI ',0
+  FB9C 00            
+  FB9D 8D   21       unswi2    bsr    panic
+  FB9F 53 57 49 32             fcc    'SWI2',0
+  FBA3 00            
+  FBA4 8D   1A                 bsr    panic
+  FBA6 53 57 49 33             fcc    'SWI3',0
+  FBAA 00            
+  FBAB 8D   13                 bsr    panic
+  FBAD 4E 4D 49 20             fcc    'NMI ',0
+  FBB1 00            
+  FBB2 8D   0C                 bsr    panic
+  FBB4 46 49 52 51             fcc    'FIRQ',0
+  FBB8 00            
+  FBB9 8D   05                 bsr    panic
+  FBBB 43 48 50 52             fcc    'CHPR',0
+  FBBF 00            
+                     * Panic processing
+  FBC0               panic     seti   mask      ints
+  FBC2 8E   FC6D               ldx    #panicy   point to string
+  FBC5 8D   11                 bsr    pdata     print it
+  FBC7 35   10                 puls   x         get message
+  FBC9 8D   0D                 bsr    pdata     print it
+  FBCB 10CE BE80               lds    #romstk   set rom stack
+  FBCF 7E   F85C               jmp    montor    goto mon loop
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   19
+Terminal I/O and Default Interrupts                 
+
+
+                     * terminal I/O equates
+               E000  acia      equ    $e000     base address for acia
+                     * String display routine
+  FBD2 8D   4C       newlin    bsr    outch     output cr
+  FBD4 86   0A                 lda    #$a       setup line feed
+  FBD6 8D   48       putch     bsr    outch     output it
+  FBD8 A6   80       pdata     lda    0,x+      get string character
+  FBDA 27   06                 beq    pdata2    end of string?
+  FBDC 81   0D                 cmpa   #$d       is it cr?
+  FBDE 27   F2                 beq    newlin
+  FBE0 20   F4                 bra    putch     go output char
+  FBE2 39            pdata2    rts              return
+                     * Output a space
+  FBE3 34   02       outsp     pshs   a         save a
+  FBE5 86   20                 lda    #$20      setup space
+  FBE7 8D   37                 bsr    outch     output it
+  FBE9 35   82                 puls   a,pc      return
+                     * Output a hex byte
+  FBEB 34   02       hexbyt    pshs   a         save byte
+  FBED 44                      lsra             shift right 4 bits
+  FBEE 44                      lsra
+  FBEF 44                      lsra
+  FBF0 44                      lsra
+  FBF1 8D   02                 bsr    hexdig    output it
+  FBF3 35   02                 puls   a         restore digit
+                     * Output a digit in hex
+  FBF5 84   0F       hexdig    anda   #$0f      mask low bits
+  FBF7 8B   30                 adda   #'0       make ascii digit
+  FBF9 81   39                 cmpa   #'9       is it digit?
+  FBFB 23   23                 bls    outch
+  FBFD 8B   07                 adda   #7        add letter bias
+  FBFF 20   1F                 bra    outch
+                     * Test for an input character
+  FC01 34   02       inchck    pshs   a         save a
+  FC03 B6   E000               lda    acia      get status
+  FC06 44                      lsra             check status bit
+  FC07 35   82                 puls   a,pc      return
+                     * Input a character with echo
+  FC09 B6   E000     inch      lda    acia      get status
+  FC0C 44                      lsra             check bit
+  FC0D 24   FA                 bcc    inch      wait for character
+  FC0F B6   E001               lda    acia+1    get character
+  FC12 84   7F                 anda   #$7f      mask parity
+  FC14 27   F3                 beq    inch      ignore nulls
+  FC16 81   61                 cmpa   #'a       is it lower case?
+  FC18 25   06                 blo    outch
+  FC1A 81   7A                 cmpa   #'z
+  FC1C 22   02                 bhi    outch
+  FC1E 80   20                 suba   #$20      make upper case
+                     * Output character routine
+  FC20 34   02       outch     pshs   a         save character
+  FC22 B6   E000     outchw    lda    acia      get status
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   20
+Terminal I/O and Default Interrupts                 
+
+  FC25 85   02                 bita   #2        check status
+  FC27 27   F9                 beq    outchw
+  FC29 35   02                 puls   a         get character
+  FC2B B7   E001               sta    acia+1    output it
+  FC2E 39                      rts              return
+                     * Initialize the terminal
+  FC2F 34   06       tinit     pshs   d         save reg
+  FC31 86   03                 lda    #$3       reset acia
+  FC33 B7   E000               sta    acia
+  FC36 86   11                 lda    #$11      set up bits & stuff
+  FC38 B7   E000               sta    acia
+  FC3B CC   3A98               ldd    #15000    delay some here
+  FC3E 83   0001     tinit2    subd   #1
+  FC41 26   FB                 bne    tinit2
+  FC43 35   86                 puls   d,pc      return
+                     * messages
+  FC45 0D            hello     fcb    $d
+  FC46 55 6E 69 46             fcc    'UniFLEX Boot ROM (MP09/DMF3/S2)',$d,0
+  FC4A 4C 45 58 20   
+  FC4E 42 6F 6F 74   
+  FC52 20 52 4F 4D   
+  FC56 20 28 4D 50   
+  FC5A 30 39 2F 44   
+  FC5E 4D 46 33 2F   
+  FC62 53 32 29 0D   
+  FC66 00            
+  FC67 0D            prompt    fcb    $d
+  FC68 25 00                   fcc    '%',0
+  FC6A 3F 3F 00      sorry     fcc    '??',0
+  FC6D 0D            panicy    fcb    $d
+  FC6E 50 61 6E 69             fcc    'Panic -> ',0
+  FC72 63 20 2D 3E   
+  FC76 20 00         
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   21
+Memory Modify Command                               
+
+
+                     *
+                     * Modify system memory
+                     *
+  FC78               modify
+  FC78 17   FCE3               lbsr   getadr    get starting address
+  FC7B 25   45                 bcs    mod99     exit if error
+  FC7D ED   5C                 std    lowadr,u  save address
+                     *
+  FC7F 8E   FCC3     mod10     ldx    #modm00
+  FC82 BD   FBD8               jsr    pdata
+  FC85 A6   5C                 lda    lowadr,u  print address
+  FC87 BD   FBEB               jsr    hexbyt
+  FC8A A6   5D                 lda    lowadr+1,u
+  FC8C BD   FBEB               jsr    hexbyt
+  FC8F BD   FBE3               jsr    outsp
+  FC92 AE   5C                 ldx    lowadr,u  get byte address
+  FC94 A6   84                 lda    0,x       get value
+  FC96 34   02                 pshs   a         save current value
+  FC98 BD   FBEB               jsr    hexbyt    output it
+  FC9B BD   FBE3               jsr    outsp     print a space
+  FC9E BD   F986               jsr    gethex    get a hex digit
+  FCA1 25   15                 bcs    mod30     jump if error
+  FCA3 48                      asla
+  FCA4 48                      asla
+  FCA5 48                      asla
+  FCA6 48                      asla
+  FCA7 A7   E4                 sta    0,s       update value
+  FCA9 BD   F986               jsr    gethex    get second hex digit
+  FCAC 25   12                 bcs    mod40     exit if error
+  FCAE AA   E0                 ora    ,s+       compute total value
+  FCB0 AE   5C       mod20     ldx    lowadr,u  get memory address
+  FCB2 A7   80                 sta    ,x+       update memory
+  FCB4 AF   5C                 stx    lowadr,u  update address
+  FCB6 20   C7                 bra    mod10     continue with next byte
+                     *
+  FCB8 81   2E       mod30     cmpa   #'.       is it "go on" char?
+  FCBA 26   04                 bne    mod40     no - exit
+  FCBC 35   02                 puls   a         restore original value
+  FCBE 20   F0                 bra    mod20     yes - move to next address
+                     *
+  FCC0 32   61       mod40     leas   1,s       clean up stack
+  FCC2 39            mod99     rts              return
+                     *
+  FCC3 0D 20 20 2D   modm00    fcc    $d,'  - ',0
+  FCC7 20 00         
+                     *
+                     * J - Jump to user program
+                     *
+  FCC9               jumpprg
+  FCC9 BD   F95E               jsr    getadr    get routine address
+  FCCC 25   04                 bcs    jump99    exit if error
+  FCCE 1F   01                 tfr    d,x       get address
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   22
+Memory Modify Command                               
+
+  FCD0 AD   84                 jsr    0,x       call routine
+  FCD2 39            jump99    rts
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   23
+Context Switching code                              
+
+
+                     *
+                     * Context switching code
+                     *
+                     * Process an interrupt as special
+  FCD3 86   0F       process   lda    #ramap&$00ff load resident ram page
+  FCD5 B7   FFF0               sta    datbox+sysseg
+  FCD8 7C   000F               inc    >kernal   bump the interrupt level
+  FCDB 26   2E                 bne    jvectr    if non zero - system is mapped in
+  FCDD 4F                      clra             set dp to 0
+  FCDE 1F   8B                 tfr    a,dp
+                     * Map in entire system address space
+  FCE0 96   0E                 lda    usrtop    get user block page
+  FCE2 B7   FFFB               sta    datbox+usrseg map it in
+  FCE5 FE   0101               ldu    sysmap+sysseg+1
+  FCE8 FF   FFF1               stu    datbox+sysseg+1
+  FCEB FE   0103               ldu    sysmap+sysseg+3
+  FCEE FF   FFF3               stu    datbox+sysseg+3
+  FCF1 FE   0105               ldu    sysmap+sysseg+5
+  FCF4 FF   FFF5               stu    datbox+sysseg+5
+  FCF7 FE   0107               ldu    sysmap+sysseg+7
+  FCFA FF   FFF7               stu    datbox+sysseg+7
+  FCFD FE   0109               ldu    sysmap+sysseg+9
+  FD00 FF   FFF9               stu    datbox+sysseg+9
+                     * Setup the system stack and invoke the interrupt routine
+  FD03 10FF BF40               sts    usp       save users stack
+  FD07 10CE BF40               lds    #sysstk   set up system stack
+  FD0B AD   94       jvectr    jsr    [0,x]     invoke the interrupt routine
+  FD0D                         seti   mask      ints
+  FD0F 0D   0F                 tst    kernal    check int level
+  FD11 1027 01EB               lbeq   userti
+  FD15 0A   0F                 dec    kernal    dec the interrupt level
+  FD17 3B                      rti              return from int
+                     * Handle a swi3
+  FD18 86   0F       swi3do    lda    #ramap&$00ff load resident ram
+  FD1A B7   FFF0               sta    datbox+sysseg
+  FD1D B6   000E               lda    >usrtop   get yser top page
+  FD20 B7   FFFB               sta    datbox+usrseg
+                     * Save registers in user block
+  FD23 10BF BF55               sty    userd     save d reg
+  FD27 BF   BF57               stx    userx     save x reg
+  FD2A FF   BF59               stu    userpc    save pc
+  FD2D F7   BF5B               stb    userpb    save post byte
+  FD30 4F                      clra             set dp reg
+  FD31 1E   B8                 exg    dp,a
+  FD33 B7   BF54               sta    usercc    save condition codes
+                     * Map in rest of system space
+  FD36 CE   FFFB               ldu    #datbox+11 point to dat box
+  FD39 10BE 0109               ldy    sysmap+9
+  FD3D BE   0107               ldx    sysmap+7
+  FD40 FC   0105               ldd    sysmap+5
+  FD43 36   36                 pshu   d,x,y     stuff in dat
+  FD45 BE   0103               ldx    sysmap+3
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   24
+Context Switching code                              
+
+  FD48 FC   0101               ldd    sysmap+1
+  FD4B 36   16                 pshu   d,x       stuff in dat
+                     * Setup system stack and invoke sycall handler
+  FD4D 10FF BF40               sts    usp       save user stack
+  FD51 10CE BF40               lds    #sysstk   set system stack
+  FD55 0C   0F                 inc    kernal    bump interrupt level
+  FD57                         clri   enable    ints
+  FD59 AD   9F 0006            jsr    [sw3vec]  invoke syscall routine
+  FD5D                         seti   mask      ints
+  FD5F 96   10                 lda    chpflg    get change flag
+  FD61 27   04                 beq    unswi     if zero - just remap
+  FD63 AD   9F 0011            jsr    [chtask]  call task changer
+                     * Map user back into system
+  FD67               unswi     seti   mask      ints
+  FD69 0A   0F                 dec    kernal    dec int level
+  FD6B CE   FFFA               ldu    #datbox+10 point to dat cells
+  FD6E 10BE BF4C               ldy    usrmap+8
+  FD72 BE   BF4A               ldx    usrmap+6
+  FD75 FC   BF48               ldd    usrmap+4
+  FD78 36   36                 pshu   d,x,y
+  FD7A BE   BF46               ldx    usrmap+2
+  FD7D FC   BF44               ldd    usrmap+0
+  FD80 36   16                 pshu   d,x
+  FD82 CE   0000               ldu    #datbox+16
+  FD85 10BE BF52               ldy    usrmap+14
+  FD89 BE   BF50               ldx    usrmap+12
+  FD8C FC   BF4E               ldd    usrmap+10
+  FD8F B7   FFFA               sta    datbox+10
+  FD92 7E   FF78               jmp    swi3un    go finish up
+                     
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   25
+High Level Interrupt Handling                       
+
+
+                     *
+                     * Interrupt handling code - all in high rom
+                     *
+  FF00                         org    rompag
+                     * Return from interrupt level 0
+                     *
+                     * If 'chpflg' is set, call guy to change tasks.  This is the
+                     * only place a task change occurs.
+                     *
+  FF00 96   10       userti    lda    chpflg    check for task change
+  FF02 27   04                 beq    unmap
+  FF04 AD   9F 0011            jsr    [chtask]  go change tasks
+                     * Rewrite the entire user map
+  FF08               unmap     seti   mask      ints
+  FF0A 0A   0F                 dec    kernal    dec the interrupt level
+  FF0C 10FE BF40               lds    usp       reset user stack pointer
+  FF10 CE   FFFA               ldu    #datbox+10 point to dat
+  FF13 10BE BF4C               ldy    usrmap+8
+  FF17 BE   BF4A               ldx    usrmap+6
+  FF1A FC   BF48               ldd    usrmap+4
+  FF1D 36   36                 pshu   d,x,y
+  FF1F BE   BF46               ldx    usrmap+2
+  FF22 FC   BF44               ldd    usrmap+0
+  FF25 36   16                 pshu   d,x
+  FF27 CE   0000               ldu    #datbox+16 point to high dat
+  FF2A 10BE BF52               ldy    usrmap+14
+  FF2E BE   BF50               ldx    usrmap+12
+  FF31 FC   BF4E               ldd    usrmap+10
+  FF34 36   36                 pshu   d,x,y     stuff into dat
+  FF36 3B            rti       rti              return to user
+                     * swi2 processor
+  FF37 34   53       swi2      pshs   cc,a,x,u  save some regs
+  FF39                         seti   mask      ints
+  FF3B 86   0F                 lda    #ramap&$00ff get resident ram page
+  FF3D B7   FFF0               sta    datbox+sysseg set into dat
+  FF40 B6   000E               lda    >usrtop   get user top page
+  FF43 B7   FFFB               sta    datbox+usrseg
+  FF46 BE   BF42               ldx    uswiv     get user swi vector
+                     * Fix up the user memory map
+  FF49 B6   BF44               lda    usrmap+sysseg restore the system segment
+  FF4C B7   FFF0               sta    datbox+sysseg
+  FF4F B6   BF4F               lda    usrmap+usrseg get user segment
+  FF52 B7   FFFB               sta    datbox+usrseg
+  FF55 30   84                 leax   0,x       check vector for non zero
+  FF57 27   02                 beq    swi2ex
+  FF59 AF   64                 stx    4,s       reset pc on stack
+  FF5B 35   93       swi2ex    puls   cc,a,x,pc return to user
+                     * Handle swi3 - system call interrupt
+  FF5D 1C   FE       swi3      clc              clear the carry bit
+  FF5F 1F   AB                 tfr    cc,dp     save cc
+  FF61 1F   02                 tfr    d,y       save d
+  FF63 EE   6A                 ldu    10,s      get pc
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   26
+High Level Interrupt Handling                       
+
+  FF65 E6   C0                 ldb    0,u+      get post byte
+  FF67 EF   6A                 stu    10,s      save new pc
+                     * Map in rest of rom and process swi3
+  FF69                         seti   mask      ints
+  FF6B 86   F0                 lda    #romap&$00ff get rom page
+  FF6D B7   FFFF               sta    datbox+romseg map in rom
+  FF70 86   F1                 lda    #romap>>8 map in rest of rom
+  FF72 B7   FFFE               sta    datbox+iodseg
+  FF75 7E   FD18               jmp    swi3do    go process swi3
+                     * Finish up a swi3 (exit code)
+  FF78 36   30       swi3un    pshu   x,y       map back top 16K
+  FF7A 10CE BF54               lds    #usercc   point to cc
+  FF7E 35   72                 puls   a,x,y,u   get back the regs
+  FF80 10FE BF40               lds    usp       get users stack pointer
+  FF84 F7   FFFB               stb    datbox+11 give back user block
+  FF87 A7   E4                 sta    0,s       reset cc
+  FF89 AF   61                 stx    1,s       set d
+  FF8B 10AF 64                 sty    4,s       set x
+  FF8E EF   6A                 stu    10,s      set the pc
+  FF90 3B                      rti              return from int
+                     * Process firq
+  FF91 32   7F       firq      leas   -1,s      make room on stack
+  FF93 34   3F                 pshs   cc,d,dp,x,y push all regs like irq
+  FF95 A6   69                 lda    9,s       get old cc
+  FF97 EF   68                 stu    8,s       store proper u reg
+  FF99 8A   80                 ora    #$80      set entire bit in cc
+  FF9B A7   E4                 sta    0,s
+  FF9D CC   F1F0               ldd    #romap    map in rom
+  FFA0 FD   FFFE               std    datbox+iodseg
+  FFA3 8E   000A               ldx    #frqvec   point to firq vector
+  FFA6 7E   FCD3               jmp    process   go process int
+                     * Process a SWI type interrupt
+  FFA9 8E   0002     swi       ldx    #swivec   get vector
+  FFAC CC   F1F0               ldd    #romap    map in rom
+  FFAF FD   FFFE               std    datbox+iodseg
+  FFB2 7E   FCD3               jmp    process   process the int
+                     * Process an NMI int
+  FFB5 8E   0008     nmi       ldx    #nmivec   get vector
+  FFB8 CC   F1F0               ldd    #romap    map in rom
+  FFBB FD   FFFE               std    datbox+iodseg
+  FFBE 7E   FCD3               jmp    process   go process int
+                     * Process an IRQ type interrupt
+  FFC1 8E   0000     irq       ldx    #irqvec   get vector
+  FFC4 CC   F1F0               ldd    #romap    map in rom
+  FFC7 FD   FFFE               std    datbox+iodseg
+  FFCA 7E   FCD3               jmp    process   go process int
+                     * Process reset
+  FFCD CC   F1F0     reset     ldd    #romap    map in rom
+  FFD0 FD   FFFE               std    datbox+iodseg
+  FFD3 7E   F808               jmp    rinit     go init system
+
+0 Error(s) Detected     3 Excessive BRANCH/JUMP(S) Detected
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   27
+High Level Interrupt Handling                       
+
+
+
+Symbol Table:
+
+CRLF     F95C   DMF3     F000   NSPG     0006   acia     E000   address  F000   
+ascii    FFE4   auxdecod F050   badcmd   F8E6   board    F000   btadr    B000   
+btsec    0001   bufseg   000C   chain    F016   chan1    0010   channel  F010   
+check    FB0A   check2   FB16   checkit  FA3F   chpflg   0010   chtask   0011   
+cmmnd    F020   commnd   F882   config   FB01   corcnt   0013   cormap   0110   
+count    FFFA   cputyp   000C   crc      0004   data     F023   datbox   FFF0   
+dboot    F8C6   dboot0   F8C9   dbusy    0001   del      FA53   delay    FA51   
+digit    FFFB   diskcmd  FA4F   dlen     001C   dma      F000   dmac1a   F004   
+dmac1c   F006   dmacc1   F011   dmadcr   F016   dmaicr   F015   dmaprc   F014   
+dmchk    F9D0   dmcnt    F002   dnsty    0020   dorest   F9DD   dpat     F9C5   
+drdy     0080   drive    F024   dummy    F8EC   exam10   F8FE   exam20   F917   
+exam30   F92F   exam35   F939   exam40   F93B   exam99   F94F   examine  F8ED   
+extaddr  000F   extadr   F025   figle2   F8A6   figle4   F8BB   figlef   F89A   
+firq     FF91   frcint   00D8   frqvec   000A   getad1   F967   getad9   F981   
+getadr   F95E   gethex   F986   gethx1   F99B   gethx9   F9A0   getnx2   FB79   
+getnxt   FB70   getpag   FB68   gotmem   FB29   hello    FC45   hexbyt   FBEB   
+hexdig   FBF5   hiadr    FFFE   inch     FC09   inchck   FC01   interrup F015   
+iodseg   000E   irq      FFC1   irqvec   0000   jump99   FCD2   jumpprg  FCC9   
+jvectr   FD0B   kernal   000F   latch    F025   limit    FFF7   loadip   F9A3   
+loadxit  FA19   lowadr   FFFC   lsd      0002   lstmem   0014   mapmsk   000F   
+memfal   FB7A   mod10    FC7F   mod20    FCB0   mod30    FCB8   mod40    FCC0   
+mod99    FCC2   modify   FC78   modm00   FCC3   montor   F85C   newlin   FBD2   
+nmi      FFB5   nmivec   0008   nomap    F3F2   nomem    FB28   nrf      0008   
+nxtcmd   F861   offset   FFF5   outch    FC20   outchw   FC22   outsp    FBE3   
+panic    FBC0   panicy   FC6D   pcrlf    F952   pdata    FBD8   pdata2   FBE2   
+priority F014   process  FCD3   prompt   FC67   putch    FBD6   ramap    0E0F   
+read     008C   realad   1000   reset    FFCD   restore  0009   rinit    F808   
+rinit2   F81C   rinit4   F84D   rlex     FA36   romadr   F800   romap    F1F0   
+rompag   FF00   romseg   000F   romstk   BE80   rti      FF36   searc2   F881   
+search   F877   seclen   0200   sector   F022   segadr   0010   segmax   0100   
+segmnt   FFF4   segsiz   1000   select   0001   skerr    0010   sorry    FC6A   
+status   F020   sw2vec   0004   sw3vec   0006   swi      FFA9   swi2     FF37   
+swi2ex   FF5B   swi3     FF5D   swi3do   FD18   swi3un   FF78   swivec   0002   
+sysmap   0100   sysres   0000   sysseg   0000   sysstk   BF40   syssu2   FB3B   
+syssu4   FB4A   syssu5   FB54   syssu6   FB60   syssup   FB31   tfrseg   000D   
+tinit    FC2F   tinit2   FC3E   track    F021   trybt    F9AF   tstloc   D0F0   
+tstpat   99AA   txtseg   0005   unhand   FB8F   unmap    FF08   unswi    FD67   
+unswi2   FB9D   usercc   BF54   userd    BF55   useres   0001   userpb   BF5B   
+userpc   BF59   userti   FF00   userx    BF57   usp      BF40   usrmap   BF44   
+usrseg   000B   usrtop   000E   uswiv    BF42   vector   FFF0   w5ld3    FA81   
+waitrst  F9E2   wd1000   F030   wd1000_r F051   wd_cmd   F037   wd_cyl_h F035   
+wd_cyl_l F034   wd_data  F030   wd_error F031   wd_read  0028   wd_resto 0016   
+wd_sdh   F036   wd_sec_c F032   wd_sec_n F033   wd_secsi 0000   wd_seek  0070   
+wd_sel0  0000   wd_sel1  0008   wd_sel2  0010   wd_sel3  0018   wd_statu F037   
+wd_sz_51 0020   wd_wr_pr F031   wdboot   F8D6   wdexit   FAF4   wdld0    FA62   
+wdld1    FA65   wdld2    FA77   wdld4    FAC7   wdld45   FACA   wdld5    FADA   
+wdld6    FAE0   wdld65   FAE3   wdld7    FAF3   wdload   FA57   wfboot   FA0F   
+
+
+
+
+
+
+SWTPC UniFLEX ROM                   11-14-5 TSC Assembler   Page   28
+High Level Interrupt Handling                       
+

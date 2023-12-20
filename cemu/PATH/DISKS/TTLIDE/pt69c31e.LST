@@ -1,0 +1,2893 @@
+AS09 Assembler for M6809 [1.41].  Copyright 1994-2005, Frank A. Kingswood                           Page    1
+----------------------------------------------- PTMON31X.A09 ------------------------------------------------
+
+2886 lines read, no errors in pass 1.
+                             ;----------------------------------------------------------
+                             ; PTMON-69 V3.1 monitor
+                             ;----------------------------------------------------------
+                             ;
+                             ; Major rewrite by Don Coates, Dec. 2006
+                             ;
+                             ; List of improvements / changes
+                             ;
+                             ; - Changed the command format from 1 character to 2 characters.
+                             ;   See the command list for details.
+                             ;
+                             ; - This version uses a direct interface for IDE hard drive.
+                             ;   The PIA socket connections are used to gain access to the
+                             ;   control signals. The IDE HD is addressed at $E008-$E009.
+                             ;----------------------------------------------------------
+                             ;
+                             ;==========================================================
+                             ;
+                             ;==========================================================
+                             ;        Original MONITOR
+                             ; Copyright 1983 Peripheral Technology
+                             ;       all rights reserved
+                             ;==========================================================
+                             ;
+                             ; MONITOR for use with the PT-69 computer system
+                             ; this MONITOR may be use with the PT69-5.
+                             ;
+                             ; This version is setup for flex with a cold start address of $CD00
+                             ;
+                             ;==========================================================
+                             ;       Command List
+                             ;==========================================================
+                             ;
+                             ;-----------------------------------------------------
+                             ; Register Commands
+                             ;
+                             ; DR                = Display Registers
+                             ; AA dd             = Examine/change Accumulator 'A'
+                             ; AB dd             = Examine/change Accumulator 'C'
+                             ; CC dd             = Examine/change Condition Codes
+                             ; DP dd             = Examine/change Direct Page register
+                             ; IX dddd           = Examine/change Index register X
+                             ; IY dddd           = Examine/change Index register Y
+                             ; PC dddd           = Examine/change the Program Counter
+                             ; US dddd           = Examine/change User Stack
+                             ;-----------------------------------------------------
+                             ; Memory Commands
+                             ;
+                             ; MF bega enda dd   = Memory Fill with data
+                             ; ML                = Memory Load with s19 data
+                             ; MD bega enda (1)  = Memory Dump command
+                             ; ME bega (2)       = Memory Edit command
+                             ; MM srce dest cnt  = Move Memory command
+                             ; MR addr (2)       = Memory Read repeditly
+                             ; MS bega enda      = Memory Save in S19 data
+                             ; MW addr dd        = Memory Write repeditly
+                             ; MT bega enda      = Memory Test using MEMTEST2
+                             ; SB bega enda dd   = Search for Byte data pattern
+                             ; SW bega enda dddd = Search for Word data pattern
+                             ;-----------------------------------------------------
+                             ; Program Execution Commands
+                             ;
+                             ; BR addr           = Set break point
+                             ; BX                = Remove break point
+                             ; ES addr           = Execute subroutine at addr
+                             ; EP addr           = Execute program at addr
+                             ; GO                = Start program
+                             ; RF                = Re-enter FLEX at its warm start addr
+                             ;-----------------------------------------------------
+                             ; Floppy Drive Commands
+                             ;
+                             ; FB                = Floppy Boot
+                             ; FL (d,t,s)(4)     = Load file from floppy
+                             ; FR (d,t,s)(4)     = Floppy Read
+                             ; FW (d,t,s)(4)     = Floppy Write
+                             ;-----------------------------------------------------
+                             ; Hard Drive Commands
+                             ;
+                             ; HB                = Hard drive Boot
+                             ; HC                = Get Hard drive Configuration
+                             ; HP (c,h,s)(4)     = Input HD Cylinders, Heads & Sectors
+                             ; HL (p,t,s)(4)     = Load file from hard drive
+                             ; HR (p,t,s)(3,4)   = Hard drive Read
+                             ; HW (p,t,s)(4)     = Hard drive Write
+                             ;-----------------------------------------------------
+                             ; Notes:
+                             ;       Except as noted, all parameters are entered in hex.
+                             ;
+                             ;       (1) Pressing the '.' key will advance to the next 256 byte
+                             ;           memory block. Pressing the ',' will move to the previous
+                             ;           256 byte memory block.
+                             ;
+                             ;       (2) Pressing the '.' key will advance to the next memory
+                             ;           location. Pressing the ',' will move to the previous
+                             ;           memory location.
+                             ;
+                             ;       (3) Pressing the '.' key will advance to the next sector
+                             ;           Pressing the ',' will move to the previous sector.
+                             ;
+                             ;       (4) These parameters are entered in decimal.
+                             ;
+0000 =                       NOICE     equ     0           ; 0=Normal, 1=NoICE debug mode
+0001 =                       IDEMode   equ     1           ; 1=CHS, 2=LBA
+0001 =                       PT69      equ     1           ; 1=SWTPcemu, 3=PT69-3, 5=PT69-5
+                             ;
+                             ;==================
+                             ; ASCII Constants
+                             ;==================
+                             ;
+0004 =                       EOT       equ     $04         ; end of text/table
+0008 =                       BkSp      equ     $08         ; backspace
+0009 =                       TabChar   equ     $09         ; tab
+000a =                       LF        equ     $0A         ; linefeed
+000d =                       CR        equ     $0D         ; carriage return
+                             ;
+2400 =                       SectBuff  equ     $2400
+                             ;
+c6ff =                       STACK1    equ     $C6FF       ; Start address of stack
+                             ;
+                             ; flex locations:
+                             ;
+cc0b =                       drive     equ     $CC0B
+                             ;
+cd00 =                       Colds     equ     $CD00       ; Flex cold start address
+cd03 =                       WARMS     equ     $CD03
+                             ;
+de00 =                       FlexDrvr  equ     $DE00       ; 6809 Flex
+                             ;
+                                       bss
+                                       include "IDEIO31X.A09"
+                             ;
+                             ; ram usage
+                             ;
+                             ;==========================================================
+                             ;
+dfc0 =                                 org     $DFC0
+                             ;
+dfc0 =                       stack     rmb     2           ; top of internal stack / user vector
+dfc2 =                       swi3v     rmb     2           ; software interrupt vector #3
+dfc4 =                       swi2v     rmb     2           ; software interrupt vector #2
+dfc6 =                       firq      rmb     2           ; fast interrupt vector
+dfc8 =                       irq       rmb     2           ; interrupt vector
+dfca =                       swiv      rmb     2           ; software interrupt vector
+                             ;
+                             ; these 3 vectors are not used by pt-mon.
+                             ; they are hear for sbug compatability.
+                             ;
+dfcc =                       svcvo     rmb     2           ; supervisor call vector orgin
+dfce =                       svcvl     rmb     2           ; supervisor call vector limit
+dfd0 =                       lraram    rmb     16          ; lra addresses
+                             ;        
+dfe0 =                       Cport     rmb     2           ; control port vector
+dfe2 =                       Echo      rmb     2           ; Echo flag
+                             ;
+                             ; sbug used 24 bytes for break point table
+                             ; ptmon allocates 16 bytes but only uses 4!???
+                             ;
+dfe4 =                       Brkpnt    rmb     2           ; breakpoint table base addr
+dfe6 =                                 rmb     8
+                             ;
+f000 =                       ROMBase   equ     $F000
+ef80 =                       RAMBase   equ     ROMBase-$80
+                             ;
+ef80 =                                 org     RAMBase
+                             ;
+                             ;------------------------------------------------
+                             ; the following are locations used by the boot and
+                             ; driver code which are in rom
+                             ;
+ef80 =                       reaxit    rmb     3
+ef83 =                       wrixit    rmb     3
+ef86 =                       verxit    rmb     3
+ef89 =                       rstxit    rmb     3
+ef8c =                       selxit    rmb     3
+ef8f =                       rdyxit    rmb     3
+ef92 =                       qrdxit    rmb     3
+                             ;
+ef95 =                       ParNum    rmb     1
+                             ;
+ef96 =                       ParTab    rmb     4           ; partition table 4 drives
+ef9a =                       DirTab    rmb     8           ; directory table
+efa2 =                       CurDrv    rmb     1
+efa3 =                       CurPrt    rmb     1           ; current partition
+efa4 =                       HDFlag    rmb     1
+                             ;
+efa5 =                       DrvTmp    rmb     1
+efa6 =                       SwpTmp    rmb     1           ; used by floppy swap
+efa7 =                       SwopX     rmb     2           ; "
+                             ;
+                             ; used by the floppy & hard drive read and write commands
+                             ; holds the partition or drive, track and Sector numbers
+                             ;
+efa9 =                       FParDrv   rmb     1           ; drive or partition number for read/write
+efaa =                       FTrack    rmb     1           ; track number for read/write
+efab =                       FSector   rmb     1           ; Sector number for read/write
+                             ;
+                             ; 24 & 32 bit division routine storage:
+                             ; and 16 by 16 multiply routine storage
+                             ;
+efac =                       Num       rmb     4
+efac =                       Mpycnd    equ     Num         ; Only uses 2 bytes
+                             
+efb0 =                       Denom     rmb     4
+efb0 =                       Mpyler    equ     Denom       ; Only uses 2 bytes
+                             
+efb4 =                       Result    rmb     4
+efb4 =                       Prduct    equ     Result
+                             
+efb8 =                       Count     rmb     1
+                             ;
+                             ; Floppy I/O temp storage
+                             ;
+efb9 =                       tcrdr     rmb     1           ; current drive register
+efba =                       drtmp     rmb     2           ; temporary storage
+efbc =                       tden      rmb     1           ; density flag of current drive
+efbd =                       ttrkrg    rmb     4           ; current track register
+efc1 =                       den0      rmb     4           ; current density register
+efc5 =                       XferAddr  rmb     2
+                             ;
+efc7 =                       digcnt    rmb     1           ; digit Count
+efc8 =                       lopcnt    rmb     1           ; loop counter
+efc9 =                       itrcnt    rmb     1           ; iteration Count
+efca =                       numtmp    rmb     2           ; used for output
+efcc =                       SrchMode  rmb     1
+                             ;
+efcd =                       LowTemp   rmb     2
+efcf =                       HighTemp  rmb     2
+                             ;
+efd1 =                       Ctr       rmb     1
+efd2 =                       Store     rmb     1
+efd3 =                       InxMSB    rmb     1
+efd4 =                       InxLSB    rmb     1
+                             ;
+efd5 =                       CPD_Data  rmb     2
+efd7 =                       HTT_Data  rmb     1
+efd8 =                       SSS_Data  rmb     1
+                             ;
+efd9 =                       SavStack  rmb     2               
+efdb =                       XregTemp  rmb     2
+efdd =                       YregTemp  rmb     2
+efdf =                       NextSctr  rmb     2
+efe1 =                       DrvrMode  rmb     1           ; $55=RAM, $AA=ROM
+                             ;
+efe2 =                       RAMParm   rmb     1           ; IDE HD command stack parameters
+efe2 =                       SectrCnt  equ     RAMParm     ; Sector count register
+                             ;
+efe3 =                       LBA_Low   rmb     1           ; LBA low byte
+efe3 =                       Sect_Num  equ     LBA_Low     ; CHS sector number
+                             ;
+efe4 =                       LBA_Mid   rmb     1           ; LBA mid byte
+efe4 =                       Cyl_Low   equ     LBA_Mid     ; CHS low cylinder
+                             ;
+efe5 =                       LBA_High  rmb     1           ; LBA high byte
+efe5 =                       Cyl_High  equ     LBA_High    ; CHS high cylinder
+                             ;
+efe6 =                       LBA_Head  rmb     1           ; LBA device
+efe6 =                       CHS_SDHN  equ     LBA_Head    ; CHS head number
+                             ;
+                             ; The follow 8 locations are for system use only.
+                             ; Once initialized, they must not be modified or moved!
+                             ;
+eff8 =                                 org     RAMBase+$78
+                             ;
+eff8 =                       SysCkSum  rmb     2           ; Checksum of system parameters
+effa =                       SysMode   rmb     1           ; 1=CHS, 2=LBA
+effb =                       SysPart   rmb     1           ; Last partition number
+effc =                       SysCyls   rmb     2           ; Total cylinders
+effe =                       SysHeds   rmb     1           ; Total heads
+efff =                       SysScts   rmb     1           ; Total sectors
+                             ;
+                             ; I/O base address
+                             ;
+e000 =                       IO_Base   equ     $E000       ; pt69 6809 system
+                             ;
+                             ; ACIA addresses
+                             ;
+e000 =                       ACIA0StR  equ     IO_Base+$00 ; debug port
+e004 =                       ACIA1StR  equ     IO_Base+$04 ; control port
+                             ;
+                             ; The I/O ports of the ide controller
+                             ;
+e008 =                       HDAdrReg  equ     IO_Base+$08 ; HD Address register
+e008 =                       HDHiByte  equ     HDAdrReg    ; Data high byte during read
+e009 =                       HDTaskRg  equ     IO_Base+$09 ; HD CS0 chip select
+e00b =                       HDAltTsk  equ     IO_Base+$0B ; HD CS1 chip select
+                             ;
+                             ; The I/O ports of the floppy drive controller
+                             ;
+e014 =                       FddDrvRg  equ     IO_Base+$14 ; drive select register
+e014 =                       FddIRQRg  equ     IO_Base+$14 ; fdc drq/intrq
+e018 =                       FddCmdRg  equ     IO_Base+$18 ; 2797 command register
+e019 =                       FddTrkRg  equ     IO_Base+$19 ; 2797 track register
+e01a =                       FddSctRg  equ     IO_Base+$1A ; 2797 Sector register
+e01b =                       FddDatRg  equ     IO_Base+$1B ; 2797 data register
+                             ;
+                             ; mc146818 CMOS_RTC address and control registers
+                             ;
+e01d =                       CMOS_RTC  equ     IO_Base+$1D ; address register CMOS_RTC
+000a =                       RTC_AReg  equ     $0A
+000b =                       RTC_BReg  equ     $0B
+000c =                       RTC_CReg  equ     $0C
+                             ;
+0000 =                       HDDatReg  equ     0           ; Address of data register
+0001 =                       HDErrReg  equ     1           ; Address of error register
+0002 =                       HDSctReg  equ     2           ; Address of sector count
+0003 =                       HDSNoReg  equ     3           ; Address of sector number
+0004 =                       HDLoCReg  equ     4           ; Address of cylinder low
+0005 =                       HDHiCReg  equ     5           ; Address of cylinder high
+0006 =                       HDHNMReg  equ     6           ; Address of head register
+0007 =                       HDCmStRg  equ     7           ; Address of command register
+                             ;
+0006 =                       HDAlStRg  equ     6           ; Address of alternate status register
+0007 =                       HDRstReg  equ     7           ; Address of reset / IRQ register
+                             ;
+                             ; the Head number (0..F) also has the mask for master/slave
+                             ; this is fixed at master.
+                             ;
+000f =                       HDNumMsk  equ     %00001111   ; Head number 'and' mask
+00a0 =                       CHSHead0  equ     %10100000   ; CHS head number zero
+0001 =                       CHS_Flag  equ     %00000001
+00e0 =                       LBAHead0  equ     %11100000   ; LBA head number zero
+0002 =                       LBA_Flag  equ     %00000010
+                             ;
+                             ; the reset/irq register has two interesting bits
+                             ;
+                             ;hdsres    equ     %00000100   ; soft reset bit
+                             ;hdnirq    equ     %00000010   ; 0 = irq active
+                             ;
+                             ; status bits from HDCmdStReg
+                             ;
+0080 =                       HDS_Busy  equ     %10000000   ; busy flag
+0040 =                       HDSReady  equ     %01000000   ; ready flag
+0020 =                       HDSWrErr  equ     %00100000   ; write error
+0010 =                       HDS_Seek  equ     %00010000   ; seek complete
+0008 =                       HDSDatRq  equ     %00001000   ; data request
+0004 =                       HDSEccEx  equ     %00000100   ; ecc executed
+0002 =                       HDSIndex  equ     %00000010   ; index found
+0001 =                       HDSErFlg  equ     %00000001   ; error flag
+                             ;
+                             ; error bits from HD Error Register
+                             ;
+0080 =                       HDBadBlk  equ     %10000000   ; bad block detected.
+0040 =                       HDBadDat  equ     %01000000   ; uncorrectable data error.
+0020 =                       HDMedChg  equ     %00100000   ; media changed.
+0010 =                       HDIDNFnd  equ     %00010000   ; id not found.
+0008 =                       HDMdChRq  equ     %00001000   ; media change rquested.
+0004 =                       HDAbrtCm  equ     %00000100   ; aborted command.
+0002 =                       HDTrk0NF  equ     %00000010   ; track 0 not found.
+0001 =                       HDAdMkNF  equ     %00000001   ; address mark not found.
+                             ;
+                             ; command opcodes
+                             ;
+0010 =                       HDCmRcal  equ     $10         ; recalibrate disk (optional)
+0020 =                       HDCmndRd  equ     $20         ; write a block with retry.
+0030 =                       HDCmndWr  equ     $30         ; read block with retry.
+0040 =                       HDCmdVDR  equ     $40         ; verify data with retry.
+0070 =                       HDCmdSek  equ     $70         ; seek Sector
+0091 =                       HDCmSpar  equ     $91         ; set cyl/track and sect/track
+00e0 =                       HDCmStop  equ     $E0         ; stop disk
+00e1 =                       HDCmStrt  equ     $E1         ; start disk
+00ec =                       HDCmIDsk  equ     $EC         ; identify disk
+                             ;
+f7fe =                       MonType   equ     ROMBase+$7FE ; Monitor type
+f800 =                       JMONITOR  equ     ROMBase+$800 ; Monitor warm start entry
+f802 =                       JNEXTCMD  equ     ROMBase+$802 ; Monitor command prompt entry
+f804 =                       JINCH     equ     ROMBase+$804
+f806 =                       JINCHE    equ     ROMBase+$806
+f808 =                       JINCHEK   equ     ROMBase+$808
+f80a =                       JOUTCH    equ     ROMBase+$80A
+f80c =                       JPDATA    equ     ROMBase+$80C
+f80e =                       JPCRLF    equ     ROMBase+$80E
+f810 =                       JPSTRNG   equ     ROMBase+$810
+                             ;         equ     ROMBase+$812 ; LRA routine in sbug-e
+                             ;
+f814 =                       JOUT2HS   equ     ROMBase+$814
+f816 =                       JOUT4HS   equ     ROMBase+$816
+f818 =                       JIN2HEX   equ     ROMBase+$818
+f81a =                       JIN4HEX   equ     ROMBase+$81A
+f81c =                       JOUT4HEX  equ     ROMBase+$81C
+f81e =                       JD32BY16  equ     ROMBase+$81E
+f820 =                       JM16BY16  equ     ROMBase+$820
+f822 =                       JINDECM   equ     ROMBase+$822
+f824 =                       JOUTDECM  equ     ROMBase+$824
+f826 =                       JGETCNFG  equ     ROMBase+$826
+                             ;
+                                       end
+                             
+                             ;
+                                       code
+f000 =                                 org     ROMBase
+                             ;
+                             ;------------------------------------------------
+                             ; PIA IDE hard disk drivers
+                             ;
+                             ; Following vector table must be located at $F000.
+                             ;
+                             ; --- "do not move" ---
+                             ;
+                                       noopt
+f000 : 7ef08c           [ 4] reajmp    jmp     HDSectRd
+f003 : 7ef0ac           [ 4] wrijmp    jmp     HDSectWr
+f006 : 7ef0de           [ 4] verjmp    jmp     HDVerify
+f009 : 7ef0e6           [ 4] rstjmp    jmp     HDRestor
+f00c : 7ef0fa           [ 4] seljmp    jmp     HDSelect
+f00f : 7ef12e           [ 4] rdyjmp    jmp     HDReady
+f012 : 7ef153           [ 4] qrdjmp    jmp     HDQukRdy
+                                       opt
+                             ;
+                             ;==========================================================
+                             ; IDE hard drive boot Loader code
+                             ;
+f015 : bdf3f8           [ 8] HDBOOT    jsr     GetConfg    ; Go get configuration data
+f018 : 2801             [ 3]           bvc     HDBoot1
+f01a : 39               [ 5]           rts
+                             ;
+f01b : bdf364           [ 8] HDBoot1   jsr     WnbRdy      ; Wait for ready
+f01e : cc0000           [ 3]           ldd     #0          ; Set Track:Sector to 0:0
+f021 : b7efa3           [ 5]           sta     CurPrt      ;   and current partiton to 0
+f024 : bdf224           [ 8]           jsr     RdHDSect    ; Go read the sector
+f027 : fc2405           [ 6]           ldd     SectBuff+5  ; Get 1st Track:Sector of Flex
+f02a : bdf287           [ 8]           jsr     LdHDFile    ; Go load Flex into memory
+                             ;
+f02d : 10cec07f         [ 4]           lds     #$C07F
+f031 : 8eef80           [ 3]           ldx     #reaxit
+f034 : 108ef000         [ 4]           ldy     #reajmp
+f038 : c615             [ 2]           ldb     #21
+f03a : a6a0             [ 6] SetHDlp1  lda     ,y+ 
+f03c : a780             [ 6]           sta     ,x+ 
+f03e : 5a               [ 2]           decb
+f03f : 26f9             [ 3]           bne     SetHDlp1
+                             ;
+f041 : 8eef80           [ 3]           ldx     #reaxit
+f044 : 108ede00         [ 4]           ldy     #FlexDrvr
+f048 : 8615             [ 2]           lda     #21
+f04a : 3402             [ 6] SetHDlp2  pshs    a
+f04c : a684             [ 4]           lda     0,x
+f04e : e6a4             [ 4]           ldb     0,y
+f050 : a7a0             [ 6]           sta     ,y+ 
+f052 : e780             [ 6]           stb     ,x+ 
+f054 : 3502             [ 6]           puls    a
+f056 : 4a               [ 2]           deca
+f057 : 26f1             [ 3]           bne     SetHDlp2
+                             ;
+f059 : cc8081           [ 3]           ldd     #$8081
+f05c : fdef96           [ 6]           std     ParTab
+f05f : cc8283           [ 3]           ldd     #$8283
+f062 : fdef98           [ 6]           std     ParTab+2
+f065 : cc0005           [ 3]           ldd     #$0005
+f068 : fdef9a           [ 6]           std     DirTab
+f06b : fdef9c           [ 6]           std     DirTab+2
+f06e : fdef9e           [ 6]           std     DirTab+4
+f071 : fdefa0           [ 6]           std     DirTab+6
+f074 : 4f               [ 2]           clra
+f075 : b7efa2           [ 5]           sta     CurDrv
+f078 : b7efa3           [ 5]           sta     CurPrt
+f07b : b7efa4           [ 5]           sta     HDFlag
+f07e : 86aa             [ 2]           lda     #$AA
+f080 : b7efe1           [ 5]           sta     DrvrMode    ; IDE drivers in ROM
+f083 : cc0000           [ 3]           ldd     #$0000
+f086 : fdcc0b           [ 6]           std     drive
+f089 : 7ecd00           [ 4]           jmp     Colds       ; Flex cold start address
+                             ;
+                             ;==========================================================
+                             ; Read sector from the hard drive
+                             ; Entry d=logical sector number
+                             ;       x=buffer address
+                             ;
+f08c : 7defa4           [ 7] HDSectRd  tst     HDFlag
+f08f : 2609             [ 3]           bne     HDSctRd1
+f091 : bdf16e           [ 8]           jsr     swop        ; Put drive num in fcb
+f094 : bdef80           [ 8]           jsr     reaxit      ; Go do floppy routine
+f097 : 7ef162           [ 4]           jmp     unswop
+                             ;
+f09a : bdf182           [ 8] HDSctRd1  jsr     SendPTS     ; Go set PTS parameters to hd
+f09d : 8607             [ 2]           lda     #HDCmStRg
+f09f : c620             [ 2]           ldb     #HDCmndRd   ; Read command.
+f0a1 : fde008           [ 6]           std     HDAdrReg
+f0a4 : bdf364           [ 8]           jsr     WnbRdy
+f0a7 : bdf2fe           [ 8]           jsr     Rd1Sectr    ; Go read the sector
+f0aa : 201e             [ 3]           bra     HDRWDone    ; Get status and exit
+                             ;
+                             ;==========================================================
+                             ; write contents of sector buffer to the hard drive.
+                             ; Entry d=logical sector number
+                             ;       x=buffer
+                             ;
+f0ac : 7defa4           [ 7] HDSectWr  tst     HDFlag
+f0af : 2609             [ 3]           bne     HDSctWr1
+f0b1 : bdf16e           [ 8]           jsr     swop
+f0b4 : bdef83           [ 8]           jsr     wrixit
+f0b7 : 7ef162           [ 4]           jmp     unswop
+                             ;
+f0ba : bdf182           [ 8] HDSctWr1  jsr     SendPTS     ; Go set PTS parameters to hd
+f0bd : 8607             [ 2]           lda     #HDCmStRg
+f0bf : c630             [ 2]           ldb     #HDCmndWr   ; Write command.
+f0c1 : fde008           [ 6]           std     HDAdrReg
+f0c4 : bdf375           [ 8]           jsr     WnbDRQ
+f0c7 : bdf331           [ 8]           jsr     Wr1Sectr    ; Go write the sector
+                             ;
+                             ;----------------------------------------------------------
+                             ; Handle ending status
+                             ; Exit with b=status
+                             ;
+f0ca : bdf364           [ 8] HDRWDone  jsr     WnbRdy
+f0cd : 270b             [ 3]           beq     HDRWExit
+f0cf : c601             [ 2]           ldb     #HDErrReg
+f0d1 : f7e008           [ 5]           stb     HDAdrReg
+f0d4 : f6e009           [ 5]           ldb     HDTaskRg
+f0d7 : 1a01             [ 3]           orcc    #$01
+f0d9 : 39               [ 5]           rts
+                             ;
+f0da : 1cfe             [ 3] HDRWExit  andcc   #$FE
+f0dc : 5f               [ 2]           clrb
+f0dd : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Verify write
+                             ; Write verify is not used for IDE drive
+                             ;
+f0de : 7defa4           [ 7] HDVerify  tst     HDFlag
+f0e1 : 26f7             [ 3]           bne     HDRWExit
+f0e3 : 7eef86           [ 4]           jmp     verxit
+                             ;
+                             ;==========================================================
+                             ; Restore to track zero
+                             ;  Don't restore IDE drive
+                             ;  just select and return
+                             ; Entry x=pointer to FCB
+                             ;
+f0e6 : a603             [ 5] HDRestor  lda     3,x
+f0e8 : 108eef96         [ 4]           ldy     #ParTab
+f0ec : 6da6             [ 7]           tst     a,y
+f0ee : 2b1e             [ 3]           bmi     HDResSel
+f0f0 : 7fefa4           [ 7]           clr     HDFlag
+f0f3 : 8d79             [ 7]           bsr     swop
+f0f5 : bdef89           [ 8]           jsr     rstxit
+f0f8 : 2068             [ 3]           bra     unswop
+                             ;
+                             ;==========================================================
+                             ; Select drive
+                             ; Entry x=pointer to FCB
+                             ;
+                             ; Modify the MSB of the logical address
+                             ; to simulate multiple hard drives
+                             ;
+f0fa : a603             [ 5] HDSelect  lda     3,x         ; Drive number in fcb
+f0fc : 108eef96         [ 4]           ldy     #ParTab
+f100 : e6a6             [ 5]           ldb     a,y
+f102 : 2b0a             [ 3]           bmi     HDResSel
+f104 : 7fefa4           [ 7]           clr     HDFlag
+f107 : 8d65             [ 7]           bsr     swop
+f109 : bdef8c           [ 8]           jsr     selxit
+f10c : 2054             [ 3]           bra     unswop
+                             ;
+f10e : 7fefa4           [ 7] HDResSel  clr     HDFlag
+f111 : 73efa4           [ 7]           com     HDFlag
+f114 : 8104             [ 2]           cmpa    #4          ; Drive in range?
+f116 : 2505             [ 3]           bcs     HDRstSe1
+f118 : c60f             [ 2]           ldb     #$F
+f11a : 1a01             [ 3]           orcc    #$01
+f11c : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Set current partition based on selected drive
+                             ;
+f11d : b7efa2           [ 5] HDRstSe1  sta     CurDrv
+f120 : 8eef96           [ 3]           ldx     #ParTab
+f123 : e686             [ 5]           ldb     a,x
+f125 : c47f             [ 2]           andb    #$7F
+f127 : f7efa3           [ 5]           stb     CurPrt
+f12a : 5f               [ 2] HDRsSeEx  clrb
+f12b : 1cfe             [ 3]           andcc   #$FE
+f12d : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Check drive ready
+                             ;
+f12e : a603             [ 5] HDReady   lda     3,x         ; Check for redirected drive
+f130 : 108eef96         [ 4]           ldy     #ParTab
+f134 : 6da6             [ 7]           tst     a,y
+f136 : 2b07             [ 3]           bmi     HDReady1
+f138 : 8d34             [ 7]           bsr     swop
+f13a : bdef8f           [ 8]           jsr     rdyxit
+f13d : 2023             [ 3]           bra     unswop
+                             ;
+f13f : bdf38a           [ 8] HDReady1  jsr     CkBusy      ; Go set direction to output
+f142 : 8607             [ 2]           lda     #HDCmStRg
+f144 : b7e008           [ 5]           sta     HDAdrReg
+f147 : b6e009           [ 5]           lda     HDTaskRg
+f14a : 8540             [ 2]           bita    #$40        ; Drive ready bit set?
+f14c : 26dc             [ 3]           bne     HDRsSeEx    ; Good exit
+                             ;
+f14e : c680             [ 2] HDNReady  ldb     #$80        ; Set drive not ready bit
+f150 : 1a01             [ 3]           orcc    #$01
+f152 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Quick check drive ready
+                             ;
+f153 : a603             [ 5] HDQukRdy  lda     3,x
+f155 : 108eef96         [ 4]           ldy     #ParTab
+f159 : 6da6             [ 7]           tst     a,y
+f15b : 2be2             [ 3]           bmi     HDReady1
+f15d : 8d0f             [ 7]           bsr     swop
+f15f : bdef92           [ 8]           jsr     qrdxit
+                             ;
+f162 : 3415             [ 9] unswop    pshs    b,x,cc      ; Save exit status!
+f164 : beefa7           [ 6]           ldx     SwopX
+f167 : f6efa6           [ 5]           ldb     SwpTmp      ; Restore drive num
+f16a : e703             [ 5]           stb     3,x         ; To fcb
+f16c : 3595             [11]           puls    b,x,cc,pc   ; Done!
+                             ;
+f16e : 3424             [ 8] swop      pshs    b,y         ; Save registers
+f170 : 108eef96         [ 4]           ldy     #ParTab     ; Point to type table
+f174 : bfefa7           [ 6]           stx     SwopX
+f177 : e603             [ 5]           ldb     3,x         ; Get drive num from fcb
+f179 : f7efa6           [ 5]           stb     SwpTmp      ; Save it
+f17c : e6a5             [ 5]           ldb     b,y         ; Get num from table
+f17e : e703             [ 5]           stb     3,x         ; Put in fcb
+f180 : 35a4             [10]           puls    b,y,pc
+                             ;
+                             ;==========================================================
+                             ; Send Partition, Track and Sector to the IDE controller.
+                             ;
+                             ;   Entry d = logical sector number
+                             ; Where a:b = MSB:LSB (track:sector)
+                             ;         x = Buffer address
+                             ;
+f182 : 10830005         [ 5] SendPTS   cmpd    #$0005
+f186 : 260a             [ 3]           bne     NewParam
+f188 : f6efa2           [ 5]           ldb     CurDrv
+f18b : 108eef9a         [ 4]           ldy     #DirTab
+f18f : 58               [ 2]           aslb
+f190 : eca5             [ 6]           ldd     b,y
+                             ;
+                                       if IDEMode=1
+                             ;
+f192 : 3430             [ 9] NewParam  pshs    x,y         ; Save sector buffer pointer
+f194 : 1f01             [ 6]           tfr     d,x         ; Put track + Sector in x
+f196 : fceffe           [ 6]           ldd     SysHeds     ; Get number of heads & sectors
+f199 : 3d               [11]           mul                 ; d = heads x sectors
+f19a : 1f02             [ 6]           tfr     d,y         ; Transfer to Y register
+f19c : f6efa3           [ 5]           ldb     CurPrt      ; Get current partition
+f19f : 4f               [ 2]           clra
+f1a0 : bdfda1           [ 8]           jsr     D32by16     ; Divide to get the cylinder number
+f1a3 : b7efe5           [ 5]           sta     Cyl_High
+f1a6 : f7efe4           [ 5]           stb     Cyl_Low
+f1a9 : 1f21             [ 6]           tfr     y,x         ; Move remainder from y to x
+f1ab : 4f               [ 2]           clra
+f1ac : f6efff           [ 5]           ldb     SysScts
+f1af : 1f02             [ 6]           tfr     d,y
+f1b1 : cc0000           [ 3]           ldd     #0
+f1b4 : bdfda1           [ 8]           jsr     D32by16     ; Divide to get the head number in B
+f1b7 : c40f             [ 2]           andb    #HDNumMsk   ; Mask the head bits
+f1b9 : caa0             [ 2]           orb     #CHSHead0   ; Set CHS mode
+f1bb : f7efe6           [ 5]           stb     CHS_SDHN    ; Save head number
+f1be : 1f20             [ 6]           tfr     y,d         ; Get remainder (sector number)
+f1c0 : 5c               [ 2]           incb                ; Add 1 for sector 0 offset
+f1c1 : f7efe3           [ 5]           stb     Sect_Num    ; Save sector number
+f1c4 : 8601             [ 2]           lda     #1          ; Setup to read a single sector
+f1c6 : b7efe2           [ 5]           sta     SectrCnt    ; Save sector count
+f1c9 : 3530             [ 9]           puls    x,y
+                             ;
+                                       else
+                             ;
+                             NewParam  sta     LBA_Mid     ; Set track
+                                       stb     LBA_Low     ;   and sector
+                                       lda     CurPrt      ; Get current partition
+                                       sta     LBA_High
+                                       lda     #LBAHead0   ; Set LBA mode
+                                       sta     LBA_Head
+                                       lda     #1          ; setup to read a single sector
+                                       sta     SectrCnt
+                             ;
+                                       endif
+                             ;
+                             ; Send parameter block to controller
+                             ;
+f1cb : 3410             [ 7] SendParm  pshs    x
+f1cd : bdf364           [ 8]           jsr     WnbRdy
+f1d0 : 8eefe2           [ 3]           ldx     #RAMParm    ; get parameter table
+f1d3 : 8602             [ 2]           lda     #HDSctReg   ; get address reg data
+f1d5 : e680             [ 6] SndParLp  ldb     ,x+         ; Get data
+f1d7 : fde008           [ 6]           std     HDAdrReg    ; Send it to the drive
+f1da : 4c               [ 2]           inca                ; Increment address pointer
+f1db : 8107             [ 2]           cmpa    #7
+f1dd : 25f6             [ 3]           blo     SndParLp    ; Loop if not done
+f1df : 3590             [ 9]           puls    x,pc        ; Restore sector buffer pointer
+                             ;
+                             ;==========================================================
+                             ; HR Command
+                             ;
+                             ; Hard drive read routine
+                             ;
+f1e1 : bdf3f8           [ 8] HDREAD    jsr     GetConfg    ; Go get configuration data
+f1e4 : 2801             [ 3]           bvc     HDREAD1
+f1e6 : 39               [ 5]           rts
+                             ;
+f1e7 : bdf491           [ 8] HDREAD1   jsr     SetPTS
+f1ea : fcefd7           [ 6] HDREAD2   ldd     HTT_Data
+f1ed : 8d35             [ 7]           bsr     RdHDSect
+f1ef : bdf8ec           [ 8]           jsr     PCRLF       ; Start a new line
+f1f2 : 8e2400           [ 3]           ldx     #SectBuff   ; Get the buffer pointer
+f1f5 : bdfc4e           [ 8]           jsr     DUMP1       ; Go dump the sector buffer
+                             ;
+f1f8 : bdf8d4           [ 8]           jsr     INCH
+f1fb : 812e             [ 2]           cmpa    #'.'
+f1fd : 2610             [ 3]           bne     HDREAD3
+f1ff : 7cefd8           [ 7]           inc     HTT_Data+1
+f202 : 7defd8           [ 7]           tst     HTT_Data+1
+f205 : 26e3             [ 3]           bne     HDREAD2
+f207 : 7cefd7           [ 7]           inc     HTT_Data
+f20a : 7cefd8           [ 7]           inc     HTT_Data+1
+f20d : 20db             [ 3]           bra     HDREAD2
+f20f : 812c             [ 2] HDREAD3   cmpa    #','
+f211 : 2610             [ 3]           bne     HDREAD4
+f213 : 7aefd8           [ 7]           dec     HTT_Data+1
+f216 : 7defd8           [ 7]           tst     HTT_Data+1
+f219 : 26cf             [ 3]           bne     HDREAD2
+f21b : 7aefd7           [ 7]           dec     HTT_Data
+f21e : 7aefd8           [ 7]           dec     HTT_Data+1
+f221 : 20c7             [ 3]           bra     HDREAD2
+f223 : 39               [ 5] HDREAD4   rts
+                             ;
+                             ;==========================================================
+                             ; Read hard drive sector
+                             ;
+f224 : bdf192           [ 8] RdHDSect  bsr     NewParam
+f227 : c620             [ 2] RdHDSctr  ldb     #HDCmndRd
+f229 : 8607             [ 2]           lda     #HDCmStRg
+f22b : fde008           [ 6]           std     HDAdrReg
+f22e : bdf364           [ 8]           jsr     WnbRdy      ; Wait for drive to become ready
+f231 : 1026022c         [ 6]           lbne    DrvError
+f235 : 8e2400           [ 3]           ldx     #SectBuff   ; Get buffer pointer
+f238 : bdf2fe           [ 8]           jsr     Rd1Sectr    ; Go get the sector
+f23b : bdf364           [ 8]           jsr     WnbRdy      ; Wait for command complete
+f23e : 1026021f         [ 6]           lbne    DrvError
+f242 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; HW Command
+                             ;
+                             ; Hard drive write routine
+                             ;
+f243 : bdf3f8           [ 8] HDWRITE   jsr     GetConfg    ; Go get configuration data
+f246 : 2801             [ 3]           bvc     HDRrite1
+f248 : 39               [ 5]           rts
+                             ;
+f249 : bdf491           [ 8] HDRrite1  jsr     SetPTS
+f24c : bdf192           [ 8]           jsr     NewParam
+f24f : c630             [ 2]           ldb     #HDCmndWr   ; write command.
+f251 : 8607             [ 2]           lda     #HDCmStRg
+f253 : fde008           [ 6]           std     HDAdrReg
+f256 : bdf375           [ 8]           jsr     WnbDRQ      ; Wait for command complete
+f259 : 10260204         [ 6]           lbne    DrvError
+f25d : 8e2400           [ 3]           ldx     #SectBuff
+f260 : bdf331           [ 8]           jsr     Wr1Sectr    ; Go write the Sector
+f263 : bdf364           [ 8]           jsr     WnbRdy      ; Wait for command complete
+f266 : 102601f7         [ 6]           lbne    DrvError
+f26a : 8ef7ae           [ 3]           ldx     #OKmsg
+f26d : 7ef908           [ 4]           jmp     PSTRNG
+                             ;
+                             ;==========================================================
+                             ; HL Command
+                             ;
+                             ; Load a file from the hard drive
+                             ;
+f270 : bdf3f8           [ 8] HDFILELD  jsr     GetConfg
+f273 : 2801             [ 3]           bvc     HDFilLd1
+f275 : 39               [ 5]           rts
+                             ;
+f276 : bdf491           [ 8] HDFilLd1  jsr     SetPTS
+f279 : 8d0c             [ 7]           bsr     LdHDFile
+f27b : 8ef7b1           [ 3]           ldx     #tadmsg
+f27e : bdf908           [ 8]           jsr     PSTRNG
+f281 : beefc5           [ 6]           ldx     XferAddr
+f284 : 7ef986           [ 4]           jmp     OUT4HEX     ; Print xfer address
+                             ;
+                             ;==========================================================
+                             ; General purpose HD file loader.
+                             ;
+                             ; Enter with Track:Sector in A:B
+                             ;
+f287 : fdefdf           [ 6] LdHDFile  std     NextSctr
+f28a : 8e2400           [ 3]           ldx     #SectBuff
+f28d : 10ffefd9         [ 7]           sts     SavStack
+                             ;
+f291 : 8d2f             [ 7] DeCode    bsr     NextByte
+f293 : 5d               [ 2]           tstb
+f294 : 27fb             [ 3]           beq     DeCode      ; Bypass nulls.
+f296 : c102             [ 2]           cmpb    #2          ; Start of record?
+f298 : 2611             [ 3]           bne     ChkAdres
+f29a : 8d1b             [ 7]           bsr     GetAdres
+f29c : 8d24             [ 7]           bsr     NextByte    ; Error if b == 0.
+f29e : 3404             [ 6] DoRecord  pshs    b
+f2a0 : 8d20             [ 7]           bsr     NextByte
+f2a2 : e7a0             [ 6]           stb     ,y+
+f2a4 : 3504             [ 6]           puls    b
+f2a6 : 5a               [ 2]           decb
+f2a7 : 26f5             [ 3]           bne     DoRecord
+f2a9 : 20e6             [ 3]           bra     DeCode
+                             ;
+f2ab : c116             [ 2] ChkAdres  cmpb    #$16        ; Error if !=.
+f2ad : 26e2             [ 3]           bne     DeCode
+f2af : 8d06             [ 7]           bsr     GetAdres    ; Get transfer address
+f2b1 : 10bfefc5         [ 7]           sty     XferAddr
+f2b5 : 20da             [ 3]           bra     DeCode
+                             ;
+                             ; Get an address from the file and
+                             ; save it in YregTemp.
+                             ;
+f2b7 : 8d09             [ 7] GetAdres  bsr     NextByte
+f2b9 : 3404             [ 6]           pshs    b
+f2bb : 8d05             [ 7]           bsr     NextByte
+f2bd : 3502             [ 6]           puls    a
+f2bf : 1f02             [ 6]           tfr     d,y
+f2c1 : 39               [ 5]           rts
+                             ;
+                             ; Get next byte into b.
+                             ; Note: Uses x, do not modify!
+                             ;
+f2c2 : 7defb8           [ 7] NextByte  tst     Count
+f2c5 : 2631             [ 3]           bne     GotSectr
+f2c7 : fcefdf           [ 6]           ldd     NextSctr    ; next tt/ss to read
+f2ca : 2605             [ 3]           bne     NewSectr
+f2cc : 10feefd9         [ 7]           lds     SavStack
+f2d0 : 39               [ 5]           rts
+                             ;
+f2d1 : bdf192           [ 8] NewSectr  jsr     NewParam
+f2d4 : c620             [ 2]           ldb     #HDCmndRd   ; Read command.
+f2d6 : 8607             [ 2]           lda     #HDCmStRg
+f2d8 : fde008           [ 6]           std     HDAdrReg
+f2db : bdf364           [ 8]           jsr     WnbRdy
+f2de : 1026017f         [ 6]           lbne    DrvError
+f2e2 : 8e2400           [ 3]           ldx     #SectBuff
+f2e5 : bdf2fe           [ 8]           jsr     Rd1Sectr
+f2e8 : 86fc             [ 2]           lda     #256-4
+f2ea : b7efb8           [ 5]           sta     Count
+f2ed : 8e2400           [ 3]           ldx     #SectBuff
+f2f0 : ec84             [ 5]           ldd     0,x         ; update next address.
+f2f2 : fdefdf           [ 6]           std     NextSctr
+f2f5 : 8e2404           [ 3]           ldx     #SectBuff+4 ; start of data.
+f2f8 : 7aefb8           [ 7] GotSectr  dec     Count
+f2fb : e680             [ 6]           ldb     ,x+
+f2fd : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Read one sector.
+                             ;
+                             ; Enter with x = sector buffer pointer
+                             ;
+f2fe : 8600             [ 2] Rd1Sectr  lda     #HDDatReg   ; point to data register
+f300 : b7e008           [ 5]           sta     HDAdrReg
+f303 : 5f               [ 2]           clrb
+f304 : b6e009           [ 5] RdLoop    lda     HDTaskRg
+f307 : a780             [ 6]           sta     ,x+ 
+f309 : b6e009           [ 5]           lda     HDTaskRg
+f30c : a780             [ 6]           sta     ,x+ 
+f30e : b6e009           [ 5]           lda     HDTaskRg
+f311 : a780             [ 6]           sta     ,x+
+f313 : b6e009           [ 5]           lda     HDTaskRg
+f316 : a780             [ 6]           sta     ,x+ 
+f318 : b6e009           [ 5]           lda     HDTaskRg
+f31b : a780             [ 6]           sta     ,x+
+f31d : b6e009           [ 5]           lda     HDTaskRg
+f320 : a780             [ 6]           sta     ,x+ 
+f322 : b6e009           [ 5]           lda     HDTaskRg
+f325 : a780             [ 6]           sta     ,x+ 
+f327 : b6e009           [ 5]           lda     HDTaskRg
+f32a : a780             [ 6]           sta     ,x+ 
+f32c : cb08             [ 2]           addb    #8
+f32e : 26d4             [ 3]           bne     RdLoop      ; finished?
+f330 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Write one sector.
+                             ;
+                             ; Enter with x = sector buffer pointer
+                             ;
+f331 : 8600             [ 2] Wr1Sectr  lda     #HDDatReg   ; point to data register
+f333 : b7e008           [ 5]           sta     HDAdrReg
+f336 : 5f               [ 2]           clrb
+f337 : a680             [ 6] WrLoop    lda     ,x+
+f339 : b7e009           [ 5]           sta     HDTaskRg
+f33c : a680             [ 6]           lda     ,x+
+f33e : b7e009           [ 5]           sta     HDTaskRg
+f341 : a680             [ 6]           lda     ,x+ 
+f343 : b7e009           [ 5]           sta     HDTaskRg
+f346 : a680             [ 6]           lda     ,x+ 
+f348 : b7e009           [ 5]           sta     HDTaskRg
+f34b : a680             [ 6]           lda     ,x+ 
+f34d : b7e009           [ 5]           sta     HDTaskRg
+f350 : a680             [ 6]           lda     ,x+ 
+f352 : b7e009           [ 5]           sta     HDTaskRg
+f355 : a680             [ 6]           lda     ,x+ 
+f357 : b7e009           [ 5]           sta     HDTaskRg
+f35a : a680             [ 6]           lda     ,x+ 
+f35c : b7e009           [ 5]           sta     HDTaskRg
+f35f : cb08             [ 2]           addb    #8
+f361 : 26d4             [ 3]           bne     WrLoop      ; finished?
+f363 : 39               [ 5]           rts
+                             ;
+                             ;--------------------------------------
+                             ; check for drive idle, ready for command
+                             ;
+f364 : 8d24             [ 7] WnbRdy    bsr     CkBusy
+f366 : 8607             [ 2]           lda     #HDCmStRg
+f368 : b7e008           [ 5]           sta     HDAdrReg
+f36b : b6e009           [ 5] wnbrd1    lda     HDTaskRg
+f36e : 8540             [ 2]           bita    #HDSReady
+f370 : 27f9             [ 3]           beq     wnbrd1      ; Loop if set
+f372 : 8401             [ 2]           anda    #HDSErFlg
+f374 : 39               [ 5]           rts
+                             ;
+                             ;--------------------------------------
+                             ; wait for drive not busy and drq = high
+                             ;
+f375 : 8d13             [ 7] WnbDRQ    bsr     CkBusy
+f377 : 8607             [ 2]           lda     #HDCmStRg
+f379 : b7e008           [ 5]           sta     HDAdrReg
+f37c : b6e009           [ 5] wnbdr1    lda     HDTaskRg
+f37f : 8540             [ 2]           bita    #HDSReady
+f381 : 27f9             [ 3]           beq     wnbdr1      ; Loop if set
+f383 : 8508             [ 2]           bita    #HDSDatRq
+f385 : 27f5             [ 3]           beq     wnbdr1      ; Loop if set
+f387 : 8401             [ 2]           anda    #HDSErFlg
+f389 : 39               [ 5]           rts
+                             ;
+                             ;--------------------------------------
+                             ; read alternate status/data register
+                             ; to determine busy bit status
+                             ;
+f38a : 8606             [ 2] CkBusy    lda     #HDAlStRg
+f38c : b7e008           [ 5]           sta     HDAdrReg
+f38f : b6e00b           [ 5] CkBusy1   lda     HDAltTsk
+f392 : 2bfb             [ 3]           bmi     CkBusy1     ; Loop if set
+f394 : 39               [ 5]           rts
+                             ;
+                             ;--------------------------------------
+                             ; Input C, H & S parameters
+                             ;
+f395 : 8ef736           [ 3] InputCHS  ldx     #chsmsg         ; Ask for CHS parameters
+f398 : bdf467           [ 8]           jsr     InpFHdat        ; display it
+f39b : fcefd5           [ 6]           ldd     CPD_Data
+f39e : fdeffc           [ 6]           std     SysCyls
+f3a1 : f6efd7           [ 5]           ldb     HTT_Data
+f3a4 : f7effe           [ 5]           stb     SysHeds
+f3a7 : f6efd8           [ 5]           ldb     SSS_Data
+f3aa : f7efff           [ 5]           stb     SysScts
+f3ad : b6effe           [ 5]           lda     SysHeds
+f3b0 : 3d               [11]           mul
+f3b1 : beeffc           [ 6]           ldx     SysCyls
+f3b4 : bdfd68           [ 8]           jsr     M16by16
+f3b7 : f7effb           [ 5]           stb     SysPart
+f3ba : 8602             [ 2]           lda     #2
+f3bc : b7effa           [ 5]           sta     SysMode
+f3bf : bdf44e           [ 8]           jsr     GetCkSum
+f3c2 : fdeff8           [ 6]           std     SysCkSum
+f3c5 : 2005             [ 3]           bra     HDConfg1
+                             ;
+                             ;================================================
+                             ; Report results
+                             ;================================================
+                             ; Report the total number of cylinder, head,
+                             ; sector and partitions of the IDE hard drive.
+                             ;
+f3c7 : 8d2f             [ 7] HDCONFIG  bsr     GetConfg    ; Go get configuration data
+f3c9 : 2801             [ 3]           bvc     HDConfg1
+f3cb : 39               [ 5]           rts
+                             ;
+f3cc : fceffc           [ 6] HDConfg1  ldd     SysCyls
+f3cf : 8ef761           [ 3]           ldx     #cylmsg     ; Get pointer to cylinder msg
+f3d2 : 8d18             [ 7]           bsr     OutStr2H    ; Go print it and the result
+                             ;
+f3d4 : f6effe           [ 5]           ldb     SysHeds     ; Get the head data
+f3d7 : 8ef76f           [ 3]           ldx     #hdsmsg     ; Get pointer to head message
+f3da : 8d0f             [ 7]           bsr     OutStr1H    ; Go print it and the result
+                             ;
+f3dc : f6efff           [ 5]           ldb     SysScts     ; Get the sector data
+f3df : 8ef77d           [ 3]           ldx     #secmsg     ; Get pointer to sector message
+f3e2 : 8d07             [ 7]           bsr     OutStr1H    ; Go print it and the result
+                             ;
+f3e4 : f6effb           [ 5]           ldb     SysPart
+f3e7 : 5c               [ 2]           incb
+f3e8 : 8ef78b           [ 3]           ldx     #parmsg     ; Get pointer to part. message
+f3eb : 4f               [ 2] OutStr1H  clra
+f3ec : fdefca           [ 6] OutStr2H  std     numtmp
+f3ef : bdf908           [ 8]           jsr     PSTRNG      ; print the main string
+f3f2 : 8eefca           [ 3]           ldx     #numtmp
+f3f5 : 7efe0e           [ 4]           jmp     OUTDECM
+                             ;
+                             ;==========================================================
+                             ; Now read as much information as is possible
+                             ; form the hard drive information block.
+                             ;
+f3f8 : 8d54             [ 7] GetConfg  bsr     GetCkSum    ; Go do a checksum on system parameter
+f3fa : 10b3eff8         [ 8]           cmpd    SysCkSum    ; If no match, data is bad
+f3fe : 260c             [ 3]           bne     GetConf1
+f400 : fceff8           [ 6]           ldd     SysCkSum    ; Get system parameters checksum
+f403 : 10830000         [ 5]           cmpd    #0          ; If zero we need to get parameters
+f407 : 2703             [ 3]           beq     GetConf1
+f409 : 1cfd             [ 3]           andcc   #$FD        ; Clear (V) bit in 'C' - register
+f40b : 39               [ 5]           rts
+                             ;
+                             ; Read parameters form hard drive
+                             ;
+                                       if IDEMode=1
+                             ;
+f40c : cc0002           [ 3] GetConf1  ldd     #2          ; Read boot sector to get sys parms
+f40f : b7efe5           [ 5]           sta     Cyl_High
+f412 : b7efe4           [ 5]           sta     Cyl_Low
+f415 : f7efe3           [ 5]           stb     Sect_Num
+f418 : 5a               [ 2]           decb
+f419 : f7efe2           [ 5]           stb     SectrCnt
+f41c : 86a0             [ 2]           lda     #CHSHead0
+f41e : b7efe6           [ 5]           sta     CHS_SDHN
+f421 : bdf1cb           [ 8]           jsr     SendParm
+f424 : bdf227           [ 8]           jsr     RdHDSctr
+f427 : 8e24fa           [ 3]           ldx     #SectBuff+250 ; Location of parms on HD
+f42a : 108eeffa         [ 4]           ldy     #SysMode    ; Location of parms in RAM
+f42e : c606             [ 2]           ldb     #6          ; bytes to move
+f430 : a680             [ 6] GetConf2  lda     ,x+ 
+f432 : a7a0             [ 6]           sta     ,y+ 
+f434 : 5a               [ 2]           decb
+f435 : 26f9             [ 3]           bne     GetConf2
+                             ;
+                                       else
+                             ;
+                             GetConf1  jsr     WnbRdy      ; Wait for ready
+                                       ldd     #1          ; Set Track:Sector to 0:0
+                                       sta     CurPrt      ;   and current partiton to 0
+                                       jsr     RdHDSect    ; Go read the sector
+                                       ldx     #SectBuff+250 ; Location of parms on HD
+                                       ldy     #SysMode    ; Location of parms in RAM
+                                       ldb     #6          ; bytes to move
+                             GetConf2  lda     ,x+ 
+                                       sta     ,y+ 
+                                       decb
+                                       bne     GetConf2
+                             ;
+                                       endif
+                             ;
+                             ; Repeat checksum test
+                             ;
+f437 : 8d15             [ 7] GetConf3  bsr     GetCkSum    ; Go do a checksum on system parameter
+f439 : 10830000         [ 5]           cmpd    #0          ; If no match, data is bad
+f43d : 2706             [ 3]           beq     GetConf4
+f43f : fdeff8           [ 6]           std     SysCkSum    ; Get system parameters checksum
+f442 : 1cfd             [ 3]           andcc   #$FD        ; Clear (V) bit in 'C' - register
+f444 : 39               [ 5]           rts
+                             ;
+                             ; Report drive not configured
+                             ;
+f445 : 8ef7c5           [ 3] GetConf4  ldx     #NotCfgMs   ; Get error message
+f448 : bdf908           [ 8] GetConf5  jsr     PSTRNG      ; Display it
+f44b : 1a02             [ 3]           orcc    #2          ; Set (V) bit in 'C' - register
+f44d : 39               [ 5]           rts                 ;
+                             ;
+                             ;==========================================================
+                             ; Get checksum
+                             ; Calculate a simple checksum on the system parameters
+                             ;
+f44e : 8eeffa           [ 3] GetCkSum  ldx     #SysMode    ; Get pointer to HD system parms
+f451 : cc0000           [ 3]           ldd     #0          ; Clear the checksum
+f454 : 108e0006         [ 4]           ldy     #6          ; Do checksum on 6 bytes
+f458 : eb80             [ 6] GetCkSm1  addb    ,x+         ; Add a byte to checksum
+f45a : 8900             [ 2]           adca    #0
+f45c : 313f             [ 5]           leay    -1,y        ; Decrement count
+f45e : 26f8             [ 3]           bne     GetCkSm1    ; Loop if not done
+f460 : 39               [ 5]           rts
+                             ;
+                             ;--------------------------------------
+                             ; check hard driver error status
+                             ;
+f461 : 8ef6d4           [ 3] DrvError  ldx     #drwems     ; Report general error for now
+f464 : 7ef908           [ 4]           jmp     PSTRNG
+                             ;
+                             ;===========================================================
+                             ; Routines common to bot floppy and HD commands
+                             ;===========================================================
+                             ;
+                             ;================================================
+                             ; Input parameters as follows:
+                             ;    C,H,S parameters for HD configuration
+                             ;    P,T,S parameters for HD sector editing
+                             ;    D,T,S parameters for FD sector editing
+                             ;
+                             ; Enter with X point to prompt message
+                             ; Exit with:
+                             ;    CPD_Data = Cylinder, Partition or Drive.
+                             ;    HTT_Data = Heads or Track (HD or FD).
+                             ;    SSS_Data = Sectors (HD or FD).
+                             ;
+                             ; Note: The data in CPD_Data will be 16-bits
+                             ;       if it contains Cylinder data. Use only
+                             ;       the bottom 8-bits if it contains
+                             ;       Partition or Drive data.
+                             ;================================================
+                             ;
+f467 : bdf90a           [ 8] InpFHdat  jsr     PDATA       ; Display prompt message
+f46a : bdfe54           [ 8]           jsr     INDECM      ; Get Cyl, Part or Drive data
+f46d : fdefd5           [ 6]           std     CPD_Data    ; Save it
+f470 : bdfe54           [ 8]           jsr     INDECM      ; Get Head or Track data
+f473 : f7efd7           [ 5]           stb     HTT_Data    ; Save it
+f476 : bdfe54           [ 8]           jsr     INDECM      ; Get Sector data
+f479 : f7efd8           [ 5]           stb     SSS_Data    ; Save it
+f47c : 8ef799           [ 3]           ldx     #DataOKms   ; Ask if data entered is OK
+f47f : bdf908           [ 8]           jsr     PSTRNG      ; print it
+f482 : bdf8d4           [ 8]           jsr     INCH        ; Get response
+f485 : 845f             [ 2]           anda    #$5F        ; mask to upper case
+f487 : 8159             [ 2]           cmpa    #'Y'        ; Is it "Y"
+f489 : 2603             [ 3]           bne     FHdata_X    ; If not then abort
+f48b : 7ef8ec           [ 4]           jmp     PCRLF       ; Otherwise, exit thru PCRLF
+                             ;
+f48e : 3264             [ 5] FHdata_X  leas    4,s         ; Fix the stack
+f490 : 39               [ 5]           rts                 ;   and exit back to the monitor
+                             ;
+                             ;--------------------------------------
+                             ; Input P, T & S parameters
+                             ;
+f491 : 8ef70c           [ 3] SetPTS    ldx     #ptsmsg     ; Set PTS message
+f494 : 8dd1             [ 7]           bsr     InpFHdat    ; Go get P, T & S parameters
+f496 : f6efd6           [ 5]           ldb     CPD_Data+1  ; Get partition number
+f499 : f7efa3           [ 5]           stb     CurPrt      ; Save it
+f49c : fcefd7           [ 6]           ldd     HTT_Data    ; Get track and sector
+f49f : 39               [ 5]           rts
+                             ;
+                             ;--------------------------------------
+                             ; Input D, T & S parameters
+                             ;
+f4a0 : 8ef6e6           [ 3] SetDTS    ldx     #dtsmsg
+f4a3 : 8dc2             [ 7]           bsr     InpFHdat    ; Go get P, T & S parameters
+f4a5 : f6efd6           [ 5]           ldb     CPD_Data+1  ; Ask for parameters
+f4a8 : f7efa9           [ 5]           stb     FParDrv
+f4ab : fcefd7           [ 6]           ldd     HTT_Data    ; Get track and Sector
+f4ae : fdefaa           [ 6]           std     FTrack
+f4b1 : 39               [ 5]           rts
+                             ;
+                             ;===========================================================
+                             ; Start of floppy disk commands
+                             ;===========================================================
+                             ;
+                             ; wd2797 command equates
+                             ;
+0001 =                       busy      equ     $01         ; Busy mask
+0002 =                       drq       equ     $02         ; Drq bit mask
+001c =                       rdmsk     equ     $1C         ; Read error mask
+0018 =                       vermsk    equ     $18         ; Verify error mask
+005c =                       wrmsk     equ     $5C         ; Write error mask
+                             
+0088 =                       rdcmnd    equ     $88         ; Read command
+00a8 =                       wrcmnd    equ     $A8         ; Write command
+                             ;
+                             ; note: uncomment one of the following pairs
+                             ;       of statements depending on the step
+                             ;       rate desired.
+                             ;
+                             ; 30ms step rate
+                             ;
+                             ;skcmnd    equ     $1B         ; Seek command
+                             ;rscmnd    equ     $0B         ; Restore command
+                             ;
+                             ; 6 ms step rate
+                             ;
+0018 =                       skcmnd    equ     $18         ; Seek command
+0008 =                       rscmnd    equ     $08         ; Restore command
+                             ;
+                             ;==========================================================
+                             ; read Sector
+                             ;
+f4b2 : 8d3c             [ 7] FDREAD    bsr     RdWrFsec
+f4b4 : bdf601           [ 8]           jsr     read        ; Read Sector
+f4b7 : f6e018           [ 5]           ldb     FddCmdRg
+f4ba : c510             [ 2]           bitb    #$10        ; Test for record not found
+f4bc : 2709             [ 3]           beq     rdfse1      ; Skip if other error
+f4be : fcefaa           [ 6]           ldd     FTrack      ; Restore track and Sector
+f4c1 : 8e2400           [ 3]           ldx     #SectBuff
+f4c4 : bdf601           [ 8]           jsr     read        ; Try again
+f4c7 : 2698             [ 3] rdfse1    bne     DrvError    ; Report error
+f4c9 : 8e2400           [ 3]           ldx     #SectBuff
+f4cc : 7efc4e           [ 4]           jmp     DUMP1
+                             ;
+                             ;================================================
+                             ; write Sector
+                             ;
+f4cf : 8d1f             [ 7] FDWRITE   bsr     RdWrFsec
+f4d1 : bdf6ab           [ 8]           jsr     write       ; Write Sector
+f4d4 : f6e018           [ 5]           ldb     FddCmdRg
+f4d7 : c510             [ 2]           bitb    #$10
+f4d9 : 2709             [ 3]           beq     wrtse1      ; Skip if other error
+f4db : fcefaa           [ 6]           ldd     FTrack      ; Get track (& Sector) number
+f4de : 8e2400           [ 3]           ldx     #SectBuff
+f4e1 : bdf6ab           [ 8]           jsr     write       ; Try again
+f4e4 : c55c             [ 2] wrtse1    bitb    #wrmsk
+f4e6 : 1026ff77         [ 6]           lbne    DrvError
+f4ea : 8ef7ae           [ 3]           ldx     #OKmsg
+f4ed : 7ef908           [ 4]           jmp     PSTRNG
+                             ;
+                             ;--------------------------------------
+                             ;
+f4f0 : 8dae             [ 7] RdWrFsec  jsr     SetDTS
+f4f2 : f6efa9           [ 5]           ldb     FParDrv     ; Get drive number
+f4f5 : c403             [ 2]           andb    #3          ; Make it <=3
+f4f7 : f7e014           [ 5]           stb     FddDrvRg
+f4fa : f7efb9           [ 5]           stb     tcrdr
+f4fd : 8608             [ 2]           lda     #rscmnd
+f4ff : b7e018           [ 5]           sta     FddCmdRg
+f502 : bdf693           [ 8]           jsr     dly28       ; Delay
+f505 : bdf64e           [ 8]           jsr     waitnb      ; Wait for command to complete
+f508 : fcefaa           [ 6]           ldd     FTrack      ; Get track (& Sector) number
+f50b : 8e2400           [ 3]           ldx     #SectBuff
+f50e : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; Load file from drive, track and Sector
+                             ;
+f50f : 8d8f             [ 7] FDFILELD  jsr     SetDTS
+f511 : f6efa9           [ 5]           ldb     FParDrv     ; Get drive number
+f514 : c403             [ 2]           andb    #3          ; Make it <=3
+f516 : f7e014           [ 5]           stb     FddDrvRg
+f519 : f7efb9           [ 5]           stb     tcrdr
+f51c : 8608             [ 2]           lda     #rscmnd
+f51e : b7e018           [ 5]           sta     FddCmdRg
+f521 : bdf693           [ 8]           jsr     dly28       ; Delay
+f524 : bdf64e           [ 8]           jsr     waitnb      ; Wait for command to complete
+f527 : fcefaa           [ 6]           ldd     FTrack      ; Get track (& Sector) number
+f52a : fd2400           [ 6]           std     SectBuff
+f52d : 8d0f             [ 7]           bsr     Loader      ; Load binary file
+f52f : 8ef7b1           [ 3]           ldx     #tadmsg
+f532 : bdf908           [ 8]           jsr     PSTRNG
+f535 : beefc5           [ 6]           ldx     XferAddr
+f538 : bdf986           [ 8]           jsr     OUT4HEX     ; Print xfer address
+f53b : 7ef8ec           [ 4]           jmp     PCRLF
+                             ;
+                             ;================================================
+                             ; function: Loader - binary file loader
+                             ; input: track and sector in buffer 0&1
+                             ; output: transfer address in tfradr
+                             ; calls: read
+                             ;
+f53e : 8e2400           [ 3] Loader    ldx     #SectBuff   ; +256
+f541 : bfefdb           [ 6]           stx     XregTemp
+f544 : 10ffefd9         [ 7]           sts     SavStack
+                             ;
+                             ; do until end of file
+                             ;
+f548 : 8d33             [ 7] fload1    bsr     getch       ; Get a char from buffer
+f54a : 8102             [ 2]           cmpa    #$02        ; Data record header
+f54c : 2710             [ 3]           beq     fload2      ; Br if so
+f54e : 8116             [ 2]           cmpa    #$16        ; Xfr address header
+f550 : 26f6             [ 3]           bne     fload1      ; Loop if neither
+f552 : 8d29             [ 7]           bsr     getch       ; Transfer address
+f554 : b7efc5           [ 5]           sta     XferAddr
+f557 : 8d24             [ 7]           bsr     getch
+f559 : b7efc6           [ 5]           sta     XferAddr+1
+f55c : 20ea             [ 3]           bra     fload1
+                             ;
+f55e : 8d1d             [ 7] fload2    bsr     getch       ; Get load address
+f560 : 3402             [ 6]           pshs    a
+f562 : 8d19             [ 7]           bsr     getch
+f564 : 1f89             [ 6]           tfr     a,b
+f566 : 3502             [ 6]           puls    a
+f568 : 1f02             [ 6]           tfr     d,y
+f56a : 8d11             [ 7]           bsr     getch       ; Get byte count
+f56c : 1f89             [ 6]           tfr     a,b         ; Save
+f56e : 27d8             [ 3]           beq     fload1      ; Br if count=0
+                             ;
+f570 : 3404             [ 6] fload3    pshs    b
+f572 : 8d09             [ 7]           bsr     getch       ; Get next byte
+f574 : 3504             [ 6]           puls    b
+f576 : a7a0             [ 6]           sta     ,y+ 
+f578 : 5a               [ 2]           decb                ; End of data record?
+f579 : 26f5             [ 3]           bne     fload3
+f57b : 20cb             [ 3]           bra     fload1      ; Get another record
+                             ;
+                             ; get character routine - reads Sector if necessary
+                             ;
+f57d : beefdb           [ 6] getch     ldx     XregTemp
+f580 : 8c2500           [ 4]           cmpx    #SectBuff+256 ; Out of data
+f583 : 2629             [ 3]           bne     getch4      ; Go read character
+f585 : 8e2400           [ 3] getch2    ldx     #SectBuff
+f588 : ec84             [ 5]           ldd     0,x         ; Get next track & Sector
+f58a : 10830000         [ 5]           cmpd    #0
+f58e : 2724             [ 3]           beq     getch6      ; 0 Sector ends load
+f590 : fdefaa           [ 6]           std     FTrack
+f593 : 8d6c             [ 7]           bsr     read        ; Next Sector
+f595 : f6e018           [ 5]           ldb     FddCmdRg
+f598 : c510             [ 2]           bitb    #$10
+f59a : 2708             [ 3]           beq     getch3
+f59c : fcefaa           [ 6]           ldd     FTrack
+f59f : 8e2400           [ 3]           ldx     #SectBuff
+f5a2 : 8d5d             [ 7]           bsr     read
+f5a4 : f6e018           [ 5] getch3    ldb     FddCmdRg
+f5a7 : 1026feb6         [ 6]           lbne    DrvError    ; Read error
+f5ab : 8e2404           [ 3]           ldx     #SectBuff+4 ; Point past link
+f5ae : a680             [ 6] getch4    lda     ,x+         ; Get char from buffer
+f5b0 : bfefdb           [ 6]           stx     XregTemp
+f5b3 : 39               [ 5]           rts
+                             ;
+f5b4 : 10feefd9         [ 7] getch6    lds     SavStack
+f5b8 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; 'FB' floppy boot
+                             ;==========================================================
+                             ;
+f5b9 : b6e018           [ 5] FDBOOT    lda     FddCmdRg    ; turn motor on
+f5bc : 8600             [ 2]           lda     #0
+f5be : b7e014           [ 5]           sta     FddDrvRg    ; select drive 0
+f5c1 : 8e0000           [ 3]           ldx     #0000       ; delay so motor can start
+f5c4 : 3d               [11] ovr       mul
+f5c5 : 301f             [ 5]           leax    -1,x
+f5c7 : 26fb             [ 3]           bne     ovr
+                             ;
+f5c9 : c60f             [ 2]           ldb     #$0F        ; restore command
+f5cb : f7e018           [ 5]           stb     FddCmdRg    ; issue command
+f5ce : bdf693           [ 8]           jsr     dly28       ; wait before reading FddCmdRg
+f5d1 : f6e018           [ 5] loop1     ldb     FddCmdRg
+f5d4 : c501             [ 2]           bitb    #1          ; wait until restore complete
+f5d6 : 26f9             [ 3]           bne     loop1
+f5d8 : 8601             [ 2]           lda     #1          ; set Sector register to '1'
+f5da : b7e01a           [ 5]           sta     FddSctRg
+f5dd : bdf693           [ 8]           jsr     dly28
+f5e0 : c68c             [ 2]           ldb     #$8C        ; read Sector command
+f5e2 : f7e018           [ 5]           stb     FddCmdRg    ; issue command
+f5e5 : bdf693           [ 8]           jsr     dly28
+f5e8 : 8ec000           [ 3]           ldx     #$C000      ; load point = $c000
+f5eb : f6e018           [ 5] loop2     ldb     FddCmdRg    ; read status register
+f5ee : c502             [ 2]           bitb    #2          ; drq?
+f5f0 : 2705             [ 3]           beq     loop3       ; yes: read byte
+f5f2 : b6e01b           [ 5]           lda     FddDatRg    ; get data byte
+f5f5 : a780             [ 6]           sta     ,x+         ; store it
+f5f7 : f6e018           [ 5] loop3     ldb     FddCmdRg    ; no: check for errors?
+f5fa : c501             [ 2]           bitb    #1          ; no: check for busy
+f5fc : 26ed             [ 3]           bne     loop2       ; yes: loop till done
+f5fe : 7ec000           [ 4]           jmp     $C000       ; no: execute boot
+                             ;
+                             ;==========================================================
+                             ; Read
+                             ; Entry - (x) = fcb Sector buffer address
+                             ;         (a) = track number
+                             ;         (b) = Sector number
+                             ; The sector referenced by the track and sector
+                             ; number is to be read into the sector buffer
+                             ; at $C000 hex.
+                             ;
+f601 : 8d56             [ 7] read      bsr     SeekTrck    ; Check if seek needed
+f603 : 8688             [ 2]           lda     #rdcmnd     ; Read command
+f605 : 7de019           [ 7]           tst     FddTrkRg    ; Test for track 0
+f608 : 2703             [ 3]           beq     read21      ; Yes: don't check density
+f60a : baefbc           [ 5]           ora     tden        ; No: set density if needed
+f60d : b7e018           [ 5] read21    sta     FddCmdRg    ; Give command to disk
+f610 : bdf693           [ 8]           jsr     dly28       ; Wait for command to complete
+f613 : b6e014           [ 5] read3     lda     FddIRQRg    ; Read fast status register
+f616 : 84c0             [ 2]           anda    #$C0        ; Mask bits 7 & 6
+f618 : 2b0c             [ 3]           bmi     read4       ; Test for drq?
+f61a : 27f7             [ 3]           beq     read3       ; Test for disk busy
+                             ;
+f61c : f6e018           [ 5] ertst     ldb     FddCmdRg    ; Read status
+f61f : c510             [ 2]           bitb    #$10        ; Test for record not found (rnf)
+f621 : 260a             [ 3]           bne     er3
+f623 : c51c             [ 2] er2       bitb    #rdmsk      ; Only test error conditions
+f625 : 39               [ 5]           rts
+                             ;
+f626 : b6e01b           [ 5] read4     lda     FddDatRg    ; Get data
+f629 : a780             [ 6]           sta     ,x+         ; Write in next memory locaion
+f62b : 20e6             [ 3]           bra     read3       ; Go get next byte
+                             ;
+                             ; if error was caused by 'record not found' see
+                             ; if the error was caused by the user changing
+                             ; the diskette to one of opposite density.
+                             ; this error recovery is made by reversing the
+                             ; density flag and allowing flex to re-read the Sector.
+                             ;
+f62d : 7de019           [ 7] er3       tst     FddTrkRg    ; Test for track 0?
+f630 : 27f1             [ 3]           beq     er2         ; Yes: don't reverse density flag
+f632 : bfefba           [ 6]           stx     drtmp       ; Save x
+f635 : 8eefc1           [ 3]           ldx     #den0       ; Point to density registers
+f638 : 3404             [ 6]           pshs    b
+f63a : 8d64             [ 7]           bsr     GetLstDr    ; Point x at proper density register
+f63c : 3504             [ 6]           puls    b
+f63e : 6384             [ 6]           com     0,x         ; Reverse density flag
+f640 : 8602             [ 2]           lda     #2          ; Mask out all but density bit
+f642 : a484             [ 4]           anda    0,x
+f644 : a784             [ 4]           sta     0,x         ; Save density flag
+f646 : b7efbc           [ 5]           sta     tden        ; Update current drive density flag
+f649 : beefba           [ 6]           ldx     drtmp       ; Restore x
+f64c : 20d5             [ 3]           bra     er2
+                             ;
+                             ; wait for busy flag to clear
+                             ;
+f64e : 3404             [ 6] waitnb    pshs    b
+f650 : f6e018           [ 5] waitn1    ldb     FddCmdRg    ; Get status register
+f653 : c501             [ 2]           bitb    #busy       ; Check busy bit
+f655 : 26f9             [ 3]           bne     waitn1      ; Loop till not busy
+f657 : 3584             [ 8]           puls    b,pc
+                             ;
+                             ;------------------------------------------------
+                             ; seek the specified track
+                             ; entry - (a) = track number
+                             ;         (b) = Sector number
+                             ; exit -  (z) = 0 if error
+                             ;         (b) = error condition
+                             ;
+                             ; seeks to the track specified in "a". in
+                             ; double-side systems, this routine should also
+                             ; select the correct side depending on the Sector
+                             ; number supplied in "b".
+                             ;
+f659 : b1e019           [ 5] SeekTrck  cmpa    FddTrkRg    ; Compare track
+f65c : 270e             [ 3]           beq     SekNewTk    ; If same don't seek
+f65e : b7e01b           [ 5]           sta     FddDatRg    ; Set up track to seek to
+f661 : 8d30             [ 7]           bsr     dly28       ; Delay
+f663 : 8618             [ 2]           lda     #skcmnd     ; Seek command
+f665 : b7e018           [ 5]           sta     FddCmdRg    ; Give command to disk
+f668 : 8d29             [ 7]           bsr     dly28       ; Delay
+f66a : 8de2             [ 7]           bsr     waitnb      ; Wait for command to complete
+f66c : f7e01a           [ 5] SekNewTk  stb     FddSctRg    ; Set sector reg
+f66f : 8d22             [ 7]           bsr     dly28
+f671 : 3404             [ 6]           pshs    b           ; Save b
+f673 : 7de019           [ 7]           tst     FddTrkRg    ; Test for track 0
+f676 : 2705             [ 3]           beq     SeekSD      ; Yes: single density - side test
+f678 : 7defbc           [ 7]           tst     tden        ; No: test density flag
+f67b : 261d             [ 3]           bne     SeekDD      ; Double density side test
+                             ;
+                             ; Single density side test
+                             ;
+f67d : c10a             [ 2] SeekSD    cmpb    #10         ; Is Sector<10?
+f67f : 230a             [ 3]           bls     SetSide1    ; Yes: select side 1
+f681 : f6efb9           [ 5] SetSide2  ldb     tcrdr       ; No: select side 2
+f684 : ca40             [ 2]           orb     #%01000000
+f686 : f7e014           [ 5]           stb     FddDrvRg    ; Write to drive select register
+f689 : 2006             [ 3]           bra     SetSideX
+                             ;
+f68b : f6efb9           [ 5] SetSide1  ldb     tcrdr       ; Select side 1
+f68e : f7e014           [ 5]           stb     FddDrvRg
+f691 : 3504             [ 6] SetSideX  puls    b           ; Restore b
+                             ;
+                             ; delay routine
+                             ;
+                                       if PT69=3
+                             ;
+                             dly28     bsr     *+2
+                                       bsr     *+2
+                                       rts
+                             ;
+                                       else
+                             ;
+f693 : 8d00             [ 7] dly28     bsr     *+2
+f695 : 8d00             [ 7]           bsr     *+2
+f697 : 8d00             [ 7]           bsr     *+2
+f699 : 39               [ 5]           rts
+                             ;
+                                       endif
+                             ;
+                             ; Double density side test
+                             ;
+f69a : c112             [ 2] SeekDD    cmpb    #18         ; Is sector <18 ?
+f69c : 23ed             [ 3]           bls     SetSide1    ; Yes: select side 1
+f69e : 20e1             [ 3]           bra     SetSide2    ; No: select side 2
+                             ;
+f6a0 : f6efb9           [ 5] GetLstDr  ldb     tcrdr       ; Get last used drive number
+f6a3 : 2705             [ 3]           beq     GetLstD2    ; If drive zero return
+f6a5 : 3001             [ 5] GetLstD1  leax    1,x         ; Bump pointer
+f6a7 : 5a               [ 2]           decb                ; Decriment counter
+f6a8 : 26fb             [ 3]           bne     GetLstD1    ; Loop until done
+f6aa : 39               [ 5] GetLstD2  rts                 ; Return
+                             ;
+                             ;================================================
+                             ; write
+                             ; entry - (x) = fcb Sector buffer address
+                             ;         (a) = track number
+                             ;         (b) = Sector number
+                             ; the Sector referenced by the track and Sector
+                             ; number is to be written from the Sector buffer
+                             ; at $2400 hex.
+                             ;
+f6ab : 8dac             [ 7] write     bsr     SeekTrck    ; Check if seek needed
+f6ad : 86a8             [ 2]           lda     #wrcmnd     ; Write command
+f6af : 7de019           [ 7]           tst     FddTrkRg    ; Test for track 0
+f6b2 : 2703             [ 3]           beq     writ3       ; Yes: use single density
+f6b4 : baefbc           [ 5]           ora     tden        ; No: set density by density flag
+f6b7 : b7e018           [ 5] writ3     sta     FddCmdRg    ; Write command to register
+f6ba : 8dd7             [ 7]           bsr     dly28       ; Wait for command to complete
+f6bc : e680             [ 6]           ldb     ,x+         ; Get first data byte
+f6be : b6e014           [ 5] writ4     lda     FddIRQRg    ; Read fast status register
+f6c1 : 84c0             [ 2]           anda    #$C0        ; Mask bits 7 & 6
+f6c3 : 2b08             [ 3]           bmi     writ5       ; Test for drq
+f6c5 : 27f7             [ 3]           beq     writ4       ; Test for disk busy
+f6c7 : bdf61c           [ 8]           jsr     ertst       ; Not busy check for errors
+f6ca : c55c             [ 2]           bitb    #wrmsk      ; Mask out garbage bits
+f6cc : 39               [ 5]           rts
+                             
+f6cd : f7e01b           [ 5] writ5     stb     FddDatRg    ; Write data byte to 2797
+f6d0 : e680             [ 6]           ldb     ,x+         ; Get next byte
+f6d2 : 20ea             [ 3]           bra     writ4       ; Loop till all data transfered
+                             ;
+                             ;--------------------------------------
+                             ; floppy and hard drive messages
+                             ;
+f6d4 : 44726976652052..      drwems    fcc     "Drive R/W error"
+f6e3 : 0d0a04                          fcb     CR,LF,EOT
+                             ;
+f6e6 : 456e7465722044..      dtsmsg    fcc     "Enter Drive, Track"
+f6f8 : 20262053656374..                fcc     " & Sector (D,T,S): "
+f70b : 04                              fcb     EOT
+                             ;
+f70c : 456e7465722050..      ptsmsg    fcc     "Enter Partition, Track"
+f722 : 20262053656374..                fcc     " & Sector (P,T,S): "
+f735 : 04                              fcb     EOT
+                             ;
+f736 : 456e7465722043..      chsmsg    fcc     "Enter Cylinders, Heads"
+f74c : 20262053656374..                fcc     " & Sectors (C,H,S): "
+f760 : 04                              fcb     EOT
+                             ;
+f761 : 2043796c696e64..      cylmsg    fcc     " Cylinders = "
+f76e : 04                              fcb     EOT
+                             ;
+f76f : 20202020204865..      hdsmsg    fcc     "     Heads = "
+f77c : 04                              fcb     EOT
+                             ;
+f77d : 20202053656374..      secmsg    fcc     "   Sectors = "
+f78a : 04                              fcb     EOT
+                             ;
+f78b : 50617274697469..      parmsg    fcc     "Partitions = "
+f798 : 04                              fcb     EOT
+                             ;
+f799 : 4f6b20746f2070..      DataOKms  fcc     "Ok to proceed (y/n)?"
+f7ad : 04                              fcb     EOT
+                             ;
+f7ae : 4f4b                  OKmsg     fcc     "OK"
+f7b0 : 04                              fcb     EOT
+                             ;
+f7b1 : 5472616e736665..      tadmsg    fcc     "Transfer address = "
+f7c4 : 04                              fcb     EOT
+                             ;
+f7c5 : 4472697665206e..      NotCfgMs  fcc     "Drive not configured"
+f7d9 : 0d0a04                          fcb     CR,LF,EOT
+                             ;
+f7dc : 0d0a                  msg1      fcb     CR,LF
+                             ;
+                                       if PT69=1
+f7de : 505436392d656d..                fcc     "PT69-emu "
+                                       endif
+                             ;
+                                       if PT69=3
+                                       fcc     "PT69-3 "
+                                       endif
+                             ;
+                                       if PT69=5
+                                       fcc     "PT69-5 "
+                                       endif
+                             ;
+                                       if IDEMode=1
+f7e7 : 43485320                        fcc     "CHS "
+                                       else
+                                       fcc     "LBA "
+                                       endif
+                             ;
+f7eb : 4d6f6e69746f72..                fcc     "Monitor, V3.1"
+f7f8 : 04                              fcb     EOT
+                             ;
+f7f9 =                       Code1End  equ     *
+                             ;
+f7fe =                                 org     ROMBase+$800-2
+                             ;
+                                       if IDEMode=1
+                             ;
+f7fe : 43                    Mon_Type  fcc     "C"
+f7ff : 31                              fcb     $31
+                             ;
+                                       else
+                             ;
+                             Mon_Type  fcc     "L"
+                                       fcb     $31
+                             ;
+                                       endif
+                             ;
+                             ; vector table for commands
+                             ;
+f800 =                                 org     ROMBase+$800
+                             ;
+f800 : f851                            fdb     MONITOR     ; Monitor warm start entry
+f802 : f88a                            fdb     NEXTCMD     ; Monitor command prompt entry
+f804 : f8d4                            fdb     INCH
+f806 : f8ce                            fdb     INCHE
+f808 : f8e2                            fdb     INCHEK
+f80a : f8f9                            fdb     OUTCH
+f80c : f90a                            fdb     PDATA
+f80e : f8ec                            fdb     PCRLF
+f810 : f908                            fdb     PSTRNG
+f812 : f914                            fdb     LRA         ; LRA routine in sbug-e
+f814 : f97f                            fdb     OUT2HS
+f816 : f97b                            fdb     OUT4HS
+f818 : f93d                            fdb     IN2HEX
+f81a : f952                            fdb     IN4HEX
+f81c : f986                            fdb     OUT4HEX
+f81e : fda1                            fdb     D32by16
+f820 : fd68                            fdb     M16by16
+f822 : fe54                            fdb     INDECM
+f824 : fe0e                            fdb     OUTDECM
+f826 : f3f8                            fdb     GetConfg
+                             ;
+                             ;==========================================================
+                             ; cold start / reset
+                             ; set up sam registers
+                             ;==========================================================
+                             ;
+                                       if PT69=1
+                             ;
+f828 : 8e0000           [ 3] START     ldx     #0          ; wait before using RAM
+f82b : b64000           [ 5] START1    lda     $4000
+f82e : 3d               [11]           mul
+f82f : 3001             [ 5]           leax    1,x
+f831 : 26f8             [ 3]           bne     START1
+                             ;
+                             ; init all 6850's so they don't generate
+                             ;   an IRQ on power up
+                             ;
+f833 : 8603             [ 2]           lda     #3          ; acia reset code
+f835 : 8ee000           [ 3]           ldx     #IO_Base    ; address of 1st acia
+f838 : a704             [ 5]           sta     4,x
+                             ;
+f83a : 8615             [ 2]           lda     #$15        ; 8 data, no parity and 1 stop
+f83c : a704             [ 5]           sta     4,x
+                             ;
+f83e : a605             [ 5]           lda     5,x
+                             ;
+f840 : 10cec6ff         [ 4]           lds     #STACK1     ; initialize stack pointer
+f844 : 7fe014           [ 7]           clr     FddDrvRg    ; reset drive register
+                             ;
+                                       endif
+                             ;
+                                       if PT69=3
+                             ;
+                             START     sta     $FFD6       ; set transparent refresh
+                                       sta     $FFD8
+                                       sta     $FFDA       ; set 64k DRAM
+                                       sta     $FFDD
+                                       sta     $FFDF       ; set map type=1
+                             ;
+                                       ldx     #0          ; wait before using RAM
+                             START1    lda     $4000
+                                       mul
+                                       leax    1,x
+                                       bne     START1
+                             ;
+                             ; init all 6850's so they don't generate
+                             ;   an IRQ on power up
+                             ;
+                                       lda     #3          ; acia reset code
+                                       ldx     #IO_Base    ; address of 1st acia
+                                       sta     0,x
+                                       sta     4,x
+                             ;
+                                       lda     #$15        ; 8 data, no parity and 1 stop
+                                       sta     0,x
+                                       sta     4,x
+                             ;
+                                       lda     1,x         ; make sure data registers are empty
+                                       lda     5,x
+                             ;
+                                       lds     #STACK1     ; initialize stack pointer
+                                       ldd     CMOS_RTC    ; to allow clean init
+                                       clr     FddDrvRg    ; reset drive register
+                             ;
+                                       endif
+                             ;
+                                       if PT69=5
+                             ;
+                             START     ldx     #0          ; wait before using RAM
+                             START1    lda     $4000
+                                       mul
+                                       leax    1,x
+                                       bne     START1
+                             ;
+                             ; init all 6850's so they don't generate
+                             ;   an IRQ on power up
+                             ;
+                                       lda     #3          ; acia reset code
+                                       ldx     #IO_Base    ; address of 1st acia
+                                       sta     0,x
+                                       sta     2,x
+                                       sta     4,x
+                                       sta     6,x
+                             ;
+                                       lda     #$15        ; 8 data, no parity and 1 stop
+                                       sta     0,x
+                                       sta     2,x
+                                       sta     4,x
+                                       sta     6,x
+                             ;
+                                       lda     1,x
+                                       lda     3,x
+                                       lda     5,x
+                                       lda     7,x         ; make sure data registers are empty
+                             ;
+                                       lds     #STACK1     ; initialize stack pointer
+                                       ldd     CMOS_RTC    ; to allow clean init
+                                       clr     FddDrvRg    ; reset drive register
+                             ;
+                                       endif
+                             ;
+                             ; Clear out scratch RAM
+                             ;
+f847 : 8eef80           [ 3]           ldx     #ROMBase-$80
+f84a : c680             [ 2]           ldb     #128
+f84c : 6f80             [ 8] START2    clr     ,x+ 
+f84e : 5a               [ 2]           decb
+f84f : 26fb             [ 3]           bne     START2
+                             ;
+                             ; Monitor warm start entry
+                             ;
+f851 : 108eff90         [ 4] MONITOR   ldy     #RAMVECT    ; point to ram vector table
+f855 : 8edfc0           [ 3]           ldx     #stack      ; point to ram load address
+f858 : c610             [ 2]           ldb     #16         ; number of bytes to transfer
+f85a : a6a0             [ 6] MON1      lda     ,y+         ; get byte
+f85c : a780             [ 6]           sta     ,x+         ; store byte
+f85e : 5a               [ 2]           decb                ; decrement Count
+f85f : 26f9             [ 3]           bne     MON1        ; loop till Count=0
+f861 : c60c             [ 2]           ldb     #12         ; clear 12 bytes on stack
+f863 : 6fe2             [ 8] MON2      clr     ,-s 
+f865 : 5a               [ 2]           decb
+f866 : 26fb             [ 3]           bne     MON2
+f868 : 8ef851           [ 3]           ldx     #MONITOR    ; set pc to pt-mon entry
+f86b : af6a             [ 6]           stx     10,s
+f86d : 86d0             [ 2]           lda     #$D0        ; PRESET CONDITION CODES ON STACK
+f86f : a7e4             [ 4]           sta     0,s
+f871 : 1f43             [ 6]           tfr     s,u
+f873 : 86ff             [ 2]           lda     #$FF        ; turn Echo on
+f875 : b7dfe2           [ 5]           sta     Echo
+f878 : 8ee004           [ 3]           ldx     #ACIA1StR   ; get control port address
+f87b : bfdfe0           [ 6]           stx     Cport       ; store address in ram
+f87e : 8effff           [ 3]           ldx     #$FFFF      ; clear break point flag
+f881 : bfdfe4           [ 6]           stx     Brkpnt
+f884 : 8ef7dc           [ 3]           ldx     #msg1       ; point to sign on message
+f887 : bdf908           [ 8]           jsr     PSTRNG      ; print it
+                             ;
+                             ; Next command function
+                             ;
+f88a : 8eff12           [ 3] NEXTCMD   ldx     #Prompt     ; point to Prompt
+f88d : bdf908           [ 8]           jsr     PSTRNG      ; print Prompt
+f890 : 8d3c             [ 7]           bsr     INCHE       ; get command
+f892 : 845f             [ 2]           anda    #$5F        ; convert to upper case
+f894 : 3402             [ 6]           pshs    a           ; save 1st letter of command
+f896 : 8d36             [ 7]           bsr     INCHE       ; get 2nd letter of command
+f898 : 845f             [ 2]           anda    #$5F        ; convert to upper case
+f89a : 1f89             [ 6]           tfr     a,b         ; put it in acc-b
+f89c : 3502             [ 6]           puls    a           ; acc-d = 2 letter command
+                             ;
+                             ; Command lookup
+                             ;
+f89e : 8efe82           [ 3]           ldx     #CMDTBL     ; point to beginning of command table
+f8a1 : 10a384           [ 7] NEXT1     cmpd    0,x         ; does command match
+f8a4 : 2709             [ 3]           beq     NEXT2       ; yes: go execute command
+f8a6 : 3004             [ 5]           leax    4,x         ; point to next table entry
+f8a8 : 8cff12           [ 4]           cmpx    #TBLEND     ; no: test for end of table
+f8ab : 27dd             [ 3]           beq     NEXTCMD     ; end of table, get another command
+f8ad : 20f2             [ 3]           bra     NEXT1       ; continue searching table
+                             ;
+f8af : 8d46             [ 7] NEXT2     bsr     OUT1S       ; output a space
+f8b1 : ad9802           [11]           jsr     [2,x]       ; execute command
+f8b4 : 20d4             [ 3]           bra     NEXTCMD     ; get new command
+                             ;
+                             ;==========================================================
+                             ; 'EP' Execute program command
+                             ;==========================================================
+                             ;
+f8b6 : bdf952           [ 8] EXEC      jsr     IN4HEX      ; get address
+f8b9 : 29cf             [ 3]           bvs     NEXTCMD     ; TEST FOR VALID ADDRESS
+f8bb : 6e84             [ 3]           jmp     0,x         ; execute the program
+                             ;
+                             ;==========================================================
+                             ; 'ES' jump to subroutine command
+                             ;==========================================================
+                             ;
+f8bd : bdf952           [ 8] JUMP      jsr     IN4HEX      ; get start address
+f8c0 : 29c8             [ 3]           bvs     NEXTCMD     ; TEST FOR VALID ADDRESS
+f8c2 : ad84             [ 7]           jsr     0,x         ; jump subroutine
+f8c4 : 20c4             [ 3]           jmp     NEXTCMD
+                             ;
+                             ;==========================================================
+                             ; 'GO' Go to user program command
+                             ;==========================================================
+                             ;
+f8c6 : 1f34             [ 6] GO        tfr     u,s
+f8c8 : 3b               [15] RETI      rti
+                             ;
+                             ;==========================================================
+                             ;
+                             ;==========================================================
+                             ;
+f8c9 : 7ddfe2           [ 7] ECHON     tst     Echo
+f8cc : 2706             [ 3]           beq     INCH
+                             ;
+                             ;==========================================================
+                             ; 'INCHE' - get character,strip parity,Echo
+                             ; returned character in accumator 'a'
+                             ;==========================================================
+                             ;
+f8ce : 8d04             [ 7] INCHE     bsr     INCH        ; get character
+f8d0 : 847f             [ 2]           anda    #$7F        ; mask off parity
+f8d2 : 2025             [ 3]           bra     OUTCH       ; Echo received character
+                             ;
+                             ;==========================================================
+                             ; 'INCH' - get character, 8 bits, no Echo
+                             ;==========================================================
+                             ;
+f8d4 : 3410             [ 7] INCH      pshs    x           ; save 'x' register
+f8d6 : bedfe0           [ 6]           ldx     Cport       ; get port address
+f8d9 : a684             [ 4] INCH1     lda     0,x         ; read status register
+f8db : 47               [ 2]           asra                ; character received ?
+f8dc : 24fb             [ 3]           bcc     INCH1       ; no: loop till received
+f8de : a601             [ 5]           lda     1,x         ; read character from register
+f8e0 : 3590             [ 9]           puls    x,pc        ; restore 'x' and return
+                             ;
+                             ;==========================================================
+                             ; INCHK - check for character availiable
+                             ; z bit is clear if character can be read
+                             ;==========================================================
+                             ;
+f8e2 : 3404             [ 6] INCHEK    pshs    b           ; save accumulator 'b'
+f8e4 : e69fdfe0         [ 9]           ldb     [Cport]     ; read status register
+f8e8 : c501             [ 2]           bitb    #1          ; test for character received
+f8ea : 3584             [ 8]           puls    b,pc        ; restore 'b' and return
+                             ;
+                             ;==========================================================
+                             ; print a CR & LF
+                             ;==========================================================
+                             ;
+f8ec : 3412             [ 8] PCRLF     pshs    a,x         ; save registers
+f8ee : 8eff3a           [ 3]           ldx     #CRLFMSG    ; point to crlf string
+f8f1 : 8d17             [ 7]           bsr     PDATA       ; print it
+f8f3 : 3592             [10]           puls    a,x,pc      ; restore registers
+                             ;
+                             ;==========================================================
+                             ; print spaces
+                             ;==========================================================
+                             ;
+f8f5 : 8d00             [ 7] OUT2S     bsr     OUT1S       ; print two spaces
+f8f7 : 8620             [ 2] OUT1S     lda     #$20        ; print one space
+                             ;
+                             ;==========================================================
+                             ; character output routine
+                             ;==========================================================
+                             ;
+f8f9 : 3414             [ 8] OUTCH     pshs    b,x         ; save b & x
+f8fb : bedfe0           [ 6]           ldx     Cport       ; get port address
+f8fe : e684             [ 4] OUTCH1    ldb     0,x         ; read status register
+f900 : 57               [ 2]           asrb                ; check for tbe?
+f901 : 57               [ 2]           asrb
+f902 : 24fa             [ 3]           bcc     OUTCH1      ; loop till empty
+f904 : a701             [ 5]           sta     1,x         ; write character
+f906 : 3594             [10]           puls    b,x,pc      ; restore b,x and return
+                             ;
+                             ;==========================================================
+                             ; print string prceded by a CR & LF
+                             ;==========================================================
+                             ;
+f908 : 8de2             [ 7] PSTRNG    bsr     PCRLF       ; print a crlf
+                             ;
+f90a : a680             [ 6] PDATA     lda     ,x+         ; get data
+f90c : 8104             [ 2]           cmpa    #4
+f90e : 2704             [ 3]           beq     LRA
+f910 : 8de7             [ 7]           bsr     OUTCH       ; print it
+f912 : 20f6             [ 3]           bra     PDATA       ; no: continue printing
+f914 : 39               [ 5] LRA       rts                 ; yes: return
+                             ;
+                             ;==========================================================
+                             ; convert ASCII character to hex
+                             ;==========================================================
+                             ;
+f915 : 8db2             [ 7] IN1HEX    bsr     ECHON       ; input character
+f917 : 3402             [ 6]           pshs    a           ; Save character
+f919 : 8130             [ 2] INHEX1    cmpa    #'0'        ; numeric adjustment
+f91b : 251b             [ 3]           bcs     INHEX5      ; if minus - not hex
+f91d : 8139             [ 2]           cmpa    #'9'        ; is character '9' or less
+f91f : 2204             [ 3]           bhi     INHEX2      ; yes: return
+f921 : 8030             [ 2]           suba    #$30
+f923 : 2010             [ 3]           bra     INHEX4
+                             ;
+f925 : 8161             [ 2] INHEX2    cmpa    #'a'        ; Is it < 'a'
+f927 : 2d02             [ 3]           blt     INHEX3      ; If less try uppercase
+f929 : 8020             [ 2]           suba    #$20
+                             ;
+f92b : 8141             [ 2] INHEX3    cmpa    #'A'        ; Is it > or = 'a'
+f92d : 2509             [ 3]           bcs     INHEX5      ; If less it ain't hex
+f92f : 8146             [ 2]           cmpa    #'F'        ; Is it < 'f'
+f931 : 2205             [ 3]           bhi     INHEX5      ; If > it ain't hex
+f933 : 8037             [ 2]           suba    #$37        ; Adjust to lower case
+f935 : 3261             [ 5] INHEX4    leas    1,s         ; Restore stack
+f937 : 39               [ 5]           rts
+                             ;
+f938 : 3502             [ 6] INHEX5    puls    a           ; Get input character
+f93a : 1a02             [ 3] INHEX6    orcc    #2          ; Set (V) bit in 'C' - register
+f93c : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; get two hex characters
+                             ;==========================================================
+                             ;
+f93d : 8dd6             [ 7] IN2HEX    bsr     IN1HEX      ; Get ms hex digit
+f93f : 29f9             [ 3]           bvs     INHEX6      ; Test for valid digit
+f941 : 48               [ 2] IN2HEX1   asla                ; Shift to ms nibble
+f942 : 48               [ 2]           asla
+f943 : 48               [ 2]           asla
+f944 : 48               [ 2]           asla
+f945 : 1f89             [ 6]           tfr     a,b         ; Save Result in 'b'
+f947 : 8dcc             [ 7]           bsr     IN1HEX      ; Get ls hex digit
+f949 : 29ef             [ 3]           bvs     INHEX6      ; Test for valid digit
+f94b : 3404             [ 6]           pshs    b           ; Combine two digits
+f94d : abe0             [ 6]           adda    ,s+ 
+f94f : 1f89             [ 6]           tfr     a,b
+f951 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; input four hex characters
+                             ;==========================================================
+                             ;
+f952 : 8de9             [ 7] IN4HEX    bsr     IN2HEX      ; get ms byte
+f954 : 29e4             [ 3]           bvs     INHEX6      ; Test for valid digit
+f956 : 3402             [ 6]           pshs    a           ; save ms byte
+f958 : 8de3             [ 7]           bsr     IN2HEX      ; get ls byte
+f95a : 3502             [ 6]           puls    a           ; get ms byte - Result in 'd'
+f95c : 29dc             [ 3]           bvs     INHEX6      ; Test for valid digit
+f95e : 1f01             [ 6]           tfr     d,x         ; put result in 'x'
+f960 : 39               [ 5]           rts
+                             ;
+                             ; output a hex nibble
+                             ;  'OUTHL' is entry for left nibble
+                             ;  'OUTHR' is entry for right nibble
+                             ;
+f961 : 44               [ 2] OUTHL     lsra
+f962 : 44               [ 2]           lsra
+f963 : 44               [ 2]           lsra
+f964 : 44               [ 2]           lsra
+f965 : 840f             [ 2] OUTHR     anda    #$0F
+f967 : 8b30             [ 2]           adda    #$30
+f969 : 8139             [ 2]           cmpa    #$39
+f96b : 238c             [ 3]           bls     OUTCH
+f96d : 8b07             [ 2]           adda    #7
+f96f : 2088             [ 3]           bra     OUTCH
+                             ;
+                             ; output two hex digits
+                             ; 'OUT2H' - to print character pointed at by 'x' register
+                             ; 'OUT2HA' - to print character pointed ay by 'a' register
+                             ;
+f971 : a684             [ 4] OUT2H     lda     0,x         ; get the data
+f973 : 3402             [ 6] OUT2HA    pshs    a           ; save it
+f975 : 8dea             [ 7]           bsr     OUTHL       ; print ms nibble
+f977 : 3502             [ 6]           puls    a           ; get data
+f979 : 20ea             [ 3]           bra     OUTHR       ; print ls nibble
+                             ;
+                             ; print 2 or 4 hex characters pointed to by 'x' register
+                             ;
+f97b : 8df4             [ 7] OUT4HS    bsr     OUT2H       ; print two hex digits
+f97d : 3001             [ 5]           leax    1,x         ; point to next character
+f97f : 8df0             [ 7] OUT2HS    bsr     OUT2H       ; print two hex digits
+f981 : 3001             [ 5]           leax    1,x
+f983 : 7ef8f7           [ 4]           jmp     OUT1S       ; print a space
+                             ;
+                             ; print 4 hex digits contained in the 'x' register
+                             ;
+f986 : 3406             [ 7] OUT4HEX   pshs    a,b         ; save registers
+f988 : 1f10             [ 6]           tfr     x,d
+f98a : 8de7             [ 7]           bsr     OUT2HA      ; print ms two hex digits
+f98c : 1f98             [ 6]           tfr     b,a         ; get ls digits
+f98e : 8de3             [ 7]           bsr     OUT2HA      ; print ls two hex digits
+f990 : 3586             [ 9]           puls    a,b,pc      ; restore registers
+                             ;
+                             ;==========================================================
+                             ; 'ME' memory examine and change
+                             ;==========================================================
+                             ;
+f992 : 8dbe             [ 7] MEMCHG    bsr     IN4HEX      ; get beginning address
+f994 : 2924             [ 3]           bvs     MEMEXIT     ; Test for valid address
+f996 : 1f12             [ 6]           tfr     x,y
+f998 : bdf8ec           [ 8] MEMCHG1   jsr     PCRLF       ; print a CR and LF
+f99b : 1f21             [ 6]           tfr     y,x
+f99d : 8de7             [ 7]           bsr     OUT4HEX     ; print address
+f99f : bdf8f7           [ 8]           jsr     OUT1S       ; print a space
+f9a2 : a6a4             [ 4]           lda     0,y         ; get data at that location
+f9a4 : 8dd9             [ 7]           bsr     OUT2HS      ; print it
+f9a6 : 8d95             [ 7]           bsr     IN2HEX      ; Get two hex digits
+f9a8 : 2815             [ 3]           bvc     CHANGE      ; VAlid data = change data in location
+f9aa : 810d             [ 2]           cmpa    #$0D        ; If <cr> get another command
+f9ac : 270c             [ 3]           beq     MEMEXIT
+f9ae : 812c             [ 2]           cmpa    #','        ; if = ',' then backup
+f9b0 : 2709             [ 3]           beq     BACKWARD
+f9b2 : 812e             [ 2]           cmpa    #'.'        ; if = '.' then go forward
+f9b4 : 2604             [ 3]           bne     MEMEXIT
+                             ;
+f9b6 : 3121             [ 5] FORWARD   leay    1,y         ; get next location
+f9b8 : 20de             [ 3]           bra     MEMCHG1     ; go print new locaion
+                             ;
+f9ba : 39               [ 5] MEMEXIT   rts
+                             ;
+f9bb : 313f             [ 5] BACKWARD  leay    -1,y        ; backup one location
+f9bd : 20d9             [ 3]           bra     MEMCHG1     ; go print the new location
+                             ;
+f9bf : a7a4             [ 4] CHANGE    sta     0,y         ; store the input data
+f9c1 : a1a4             [ 4]           cmpa    0,y         ; see if memory changed
+f9c3 : 27f1             [ 3]           beq     FORWARD     ; yes: get next locaion
+f9c5 : bdf8f7           [ 8]           jsr     OUT1S       ; no: print a space
+f9c8 : 8658             [ 2]           lda     #'X'        ; print a 'x' to imform user of bad memory
+f9ca : bdf8f9           [ 8]           jsr     OUTCH       ; print 'x'
+f9cd : 20e7             [ 3]           bra     FORWARD     ; print next location
+                             ;
+                             ;==========================================================
+                             ; 'DR' register dump command
+                             ;==========================================================
+                             ;
+f9cf : 8eff16           [ 3] DUMPREG   ldx     #REGSMSG    ; print register banner
+f9d2 : bdf908           [ 8]           jsr     PSTRNG
+f9d5 : ae4a             [ 6]           ldx     10,u        ; get 'pc'
+f9d7 : 8d23             [ 7]           bsr     DUMPWORD
+f9d9 : 1f31             [ 6]           tfr     u,x         ; get 'sp'
+f9db : 8d1f             [ 7]           bsr     DUMPWORD
+f9dd : ae48             [ 6]           ldx     8,u         ; get 'us'
+f9df : 8d1b             [ 7]           bsr     DUMPWORD
+f9e1 : ae44             [ 6]           ldx     4,u         ; get 'x'
+f9e3 : 8d17             [ 7]           bsr     DUMPWORD
+f9e5 : ae46             [ 6]           ldx     6,u         ; get 'y'
+f9e7 : 8d13             [ 7]           bsr     DUMPWORD
+f9e9 : a641             [ 5]           lda     1,u         ; get 'a'
+f9eb : 8d0a             [ 7]           bsr     DUMPBYTE
+f9ed : a642             [ 5]           lda     2,u         ; get 'b'
+f9ef : 8d06             [ 7]           bsr     DUMPBYTE
+f9f1 : a643             [ 5]           lda     3,u         ; get 'dp'
+f9f3 : 8d02             [ 7]           bsr     DUMPBYTE
+f9f5 : a6c4             [ 4]           lda     0,u         ; get 'cc'
+                             ;
+f9f7 : bdf973           [ 8] DUMPBYTE  jsr     OUT2HA
+f9fa : 2002             [ 3]           bra     DUMPREGX
+                             ;
+f9fc : 8d88             [ 7] DUMPWORD  bsr     OUT4HEX
+f9fe : 7ef8f7           [ 4] DUMPREGX  jmp     OUT1S
+                             ;
+                             ;==========================================================
+                             ; swi entry point
+                             ;==========================================================
+                             ;
+fa01 : 1f43             [ 6] SWIE      tfr     s,u         ; tranfser stack to user
+fa03 : ae4a             [ 6]           ldx     10,u        ; get pc location
+fa05 : 301f             [ 5]           leax    -1,x        ; decrement it point at the swi
+fa07 : af4a             [ 6]           stx     10,u        ; save the pc
+fa09 : bcdfe4           [ 7]           cmpx    Brkpnt      ; see if this swi was defined
+fa0c : 260b             [ 3]           bne     SWIE1       ; no: go print register dump
+fa0e : b6dfe6           [ 5]           lda     Brkpnt+2    ; yes: restore swi with data
+fa11 : a784             [ 4]           sta     0,x
+fa13 : 8effff           [ 3]           ldx     #$FFFF      ; clear break point flag
+fa16 : bfdfe4           [ 6]           stx     Brkpnt
+fa19 : 8db4             [ 7] SWIE1     bsr     DUMPREG     ; print register dump
+fa1b : 7ef88a           [ 4]           jmp     NEXTCMD
+                             ;
+                             ;==========================================================
+                             ; 'ML' - load s1 formatted tape
+                             ;==========================================================
+                             ;
+fa1e : 7fdfe2           [ 7] MLOAD     clr     Echo        ; Turn echo off
+fa21 : 327e             [ 5]           leas    -2,s        ; Reserve 2 bytes on stack
+fa23 : bdf8c9           [ 8] MLOAD1    jsr     ECHON       ; Get character
+fa26 : 8153             [ 2]           cmpa    #'S'
+fa28 : 26f9             [ 3]           bne     MLOAD1      ; Look for S
+fa2a : bdf8c9           [ 8]           jsr     ECHON       ; Get next characer
+fa2d : 8139             [ 2]           cmpa    #'9'        ; Check for end of file
+fa2f : 2741             [ 3]           beq     MLOAD5
+fa31 : 8131             [ 2]           cmpa    #'1'        ; Check for load record
+fa33 : 26ee             [ 3]           bne     MLOAD1
+fa35 : 6fe4             [ 6]           clr     0,s         ; Clear checksum
+fa37 : bdf93d           [ 8]           jsr     IN2HEX      ; Get character count
+fa3a : ebe4             [ 4]           addb    0,s         ; Update checksum
+fa3c : e7e4             [ 4]           stb     0,s         ; Save checksum
+fa3e : 8002             [ 2]           suba    #2          ; Don't include address in count
+fa40 : a761             [ 5]           sta     1,s         ; Set character count
+                             ;
+                             ; get load address
+                             ;
+fa42 : bdf952           [ 8]           jsr     IN4HEX      ; Get load address
+fa45 : 2926             [ 3]           bvs     MLOAD4      ; Test for valid data
+fa47 : 1f10             [ 6]           tfr     x,d
+fa49 : ebe4             [ 4]           addb    0,s         ; Update checksum
+fa4b : e7e4             [ 4]           stb     0,s         ; Save checksum
+fa4d : abe4             [ 4]           adda    0,s         ; Update checksum
+fa4f : a7e4             [ 4]           sta     0,s         ; Save checksum
+                             ;
+                             ; store data
+                             ;
+fa51 : bdf93d           [ 8] MLOAD2    jsr     IN2HEX      ; Get data byte
+fa54 : 291c             [ 3]           bvs     MLOAD5      ; Test for valid data
+fa56 : ebe4             [ 4]           addb    0,s         ; Update checksum
+fa58 : e7e4             [ 4]           stb     0,s         ; Save checksum
+fa5a : 6a61             [ 7]           dec     1,s         ; Decrement character count
+fa5c : 2704             [ 3]           beq     MLOAD3      ; Continue reading until count=0
+fa5e : a780             [ 6]           sta     ,x+         ; Store data in memory
+fa60 : 20ef             [ 3]           bra     MLOAD2      ; Get next byte
+                             ;
+fa62 : 6ce4             [ 6] MLOAD3    inc     0,s         ; Check checksum
+fa64 : 2607             [ 3]           bne     MLOAD4      ; Ok: get next record
+fa66 : 862a             [ 2]           lda     #'*'
+fa68 : bdf8f9           [ 8]           jsr     OUTCH
+fa6b : 20b6             [ 3]           bra     MLOAD1
+                             ;
+fa6d : 863f             [ 2] MLOAD4    lda     #'?'        ; Bad: print a '?'
+fa6f : bdf8f9           [ 8]           jsr     OUTCH       ; Print it
+fa72 : bdf8c9           [ 8] MLOAD5    jsr     ECHON       ; Get character
+fa75 : 810d             [ 2]           cmpa    #CR
+fa77 : 26f9             [ 3]           bne     MLOAD5      ; Look for CR
+fa79 : 3262             [ 5]           leas    2,s         ; Restore stack
+fa7b : 86ff             [ 2]           lda     #$FF        ; Turn echo on
+fa7d : b7dfe2           [ 5]           sta     Echo
+fa80 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; 'MS' Save S1 formatted data
+                             ;==========================================================
+                             
+fa81 : bdf952           [ 8] MSAVE     jsr     IN4HEX      ; Get begin address
+fa84 : 2964             [ 3]           bvs     MSAVE7      ; Test for valid address
+fa86 : 6fe2             [ 8]           clr     ,-s         ; Clear byte on stack
+fa88 : 3410             [ 7]           pshs    x           ; Save begin address
+fa8a : bdf8f7           [ 8]           jsr     OUT1S       ; Print a space
+fa8d : bdf952           [ 8]           jsr     IN4HEX      ; Get end address
+fa90 : 2956             [ 3]           bvs     MSAVE6      ; Test for valid address
+fa92 : 3410             [ 7]           pshs    x           ; Save end address
+fa94 : ac62             [ 7]           cmpx    2,s         ; Compare begin with end
+fa96 : 254e             [ 3]           bcs     MSAVE5      ; Is begin > end ?
+fa98 : 3001             [ 5]           leax    1,x         ; Increment end address
+fa9a : afe4             [ 5]           stx     0,s         ; Save end address
+fa9c : ece4             [ 5] MSAVE1    ldd     0,s         ; Reload end addr in acc 'd'
+fa9e : a362             [ 7]           subd    2,s         ; Subtract begin with end
+faa0 : 2706             [ 3]           beq     MSAVE2      ; Same, punch 32 bytes
+faa2 : 10830020         [ 5]           cmpd    #32         ; Less than 32 bytes?
+faa6 : 2302             [ 3]           bls     MSAVE3      ; Punch that many
+faa8 : c620             [ 2] MSAVE2    ldb     #32         ; Load byte count of 32
+faaa : e764             [ 5] MSAVE3    stb     4,s         ; Save byte count
+faac : bdf8ec           [ 8]           jsr     PCRLF       ; Print a <cr> and <lf>
+faaf : 8653             [ 2]           lda     #'S'        ; Print 'S1' header
+fab1 : bdf8f9           [ 8]           jsr     OUTCH       ; "
+fab4 : 8631             [ 2]           lda     #'1'        ; "
+fab6 : bdf8f9           [ 8]           jsr     OUTCH       ; "
+fab9 : cb03             [ 2]           addb    #3          ; Add 3 to byte count
+fabb : 1f98             [ 6]           tfr     b,a         ; Get byte count in acc 'a'
+fabd : bdf973           [ 8]           jsr     OUT2HA      ; Print byte count
+fac0 : ae62             [ 6]           ldx     2,s         ; Get begin address
+fac2 : bdf986           [ 8]           jsr     OUT4HEX     ; Print address
+fac5 : eb62             [ 5]           addb    2,s         ; Add addr msb to checksum
+fac7 : eb63             [ 5]           addb    3,s         ; Add addr lsb to checksum
+fac9 : eb84             [ 4] MSAVE4    addb    0,x         ; Add data byte to ckecksum
+facb : a680             [ 6]           lda     ,x+         ; Get data byte
+facd : bdf973           [ 8]           jsr     OUT2HA      ; Print data byte
+fad0 : 6a64             [ 7]           dec     4,s         ; Decrement byte count
+fad2 : 26f5             [ 3]           bne     MSAVE4      ; Continue till done
+fad4 : 53               [ 2]           comb                ; 1's compliment checksum
+fad5 : 1f98             [ 6]           tfr     b,a         ; Put chekcsum in acc 'a'
+fad7 : bdf973           [ 8]           jsr     OUT2HA      ; Print it
+fada : af62             [ 6]           stx     2,s         ; Save next punch address
+fadc : ace4             [ 6]           cmpx    0,s         ; Compare with end address
+fade : 26bc             [ 3]           bne     MSAVE1      ; No: punch another block
+fae0 : 8eff85           [ 3]           ldx     #S9Msg      ; Get ending record string
+fae3 : bdf908           [ 8]           jsr     PSTRNG
+fae6 : 3262             [ 5] MSAVE5    leas    2,s         ; Clean up stack
+fae8 : 3263             [ 5] MSAVE6    leas    3,s         ; "
+faea : 39               [ 5] MSAVE7    rts
+                             ;
+                             ;==========================================================
+                             ; 'MF' block fill memory command
+                             ;==========================================================
+                             ;
+faeb : bdf952           [ 8] MEMFILL   jsr     IN4HEX      ; Get starting address
+faee : 291f             [ 3]           bvs     MEMFILL3    ; Check for valid address
+faf0 : 1f12             [ 6]           tfr     x,y         ; Put beginning address in 'y'
+faf2 : bdf8f7           [ 8]           jsr     OUT1S       ; Print a space
+faf5 : bdf952           [ 8]           jsr     IN4HEX      ; Get ending address
+faf8 : 2915             [ 3]           bvs     MEMFILL3    ; Check for valid address
+fafa : 3001             [ 5]           leax    1,x
+fafc : 3410             [ 7]           pshs    x           ; Save ending address
+fafe : bdf8f7           [ 8]           jsr     OUT1S       ; Print a space
+fb01 : bdf93d           [ 8]           jsr     IN2HEX      ; Get data byte
+fb04 : 2907             [ 3]           bvs     MEMFILL2    ; Check for valid address
+fb06 : a7a0             [ 6] MEMFILL1  sta     ,y+         ; Store data and increment address
+fb08 : 10ace4           [ 7]           cmpy    0,s         ; Check for end
+fb0b : 26f9             [ 3]           bne     MEMFILL1    ; Continue looping
+fb0d : 3262             [ 5] MEMFILL2  leas    2,s         ; Restore stack
+fb0f : 39               [ 5] MEMFILL3  rts
+                             ;
+                             ;==========================================================
+                             ; 'BR' set break point command
+                             ;==========================================================
+                             ;
+fb10 : 8effff           [ 3] BREAK     ldx     #$FFFF      ; see if break point defined
+fb13 : bcdfe4           [ 7]           cmpx    Brkpnt
+fb16 : 2708             [ 3]           beq     BREAK1      ; no: get address
+fb18 : bedfe4           [ 6]           ldx     Brkpnt      ; yes: restore last break point
+fb1b : b6dfe6           [ 5]           lda     Brkpnt+2    ; get data
+fb1e : a784             [ 4]           sta     0,x         ; restore data
+fb20 : bdf952           [ 8] BREAK1    jsr     IN4HEX      ; get address
+fb23 : 290c             [ 3]           bvs     BREAK2      ; Test for valid address
+fb25 : bfdfe4           [ 6]           stx     Brkpnt      ; save address of break point
+fb28 : a684             [ 4]           lda     0,x         ; get data
+fb2a : b7dfe6           [ 5]           sta     Brkpnt+2    ; save data
+fb2d : 863f             [ 2]           lda     #$3F        ; swi code
+fb2f : a784             [ 4]           sta     0,x         ; install the break point
+fb31 : 39               [ 5] BREAK2    rts
+                             ;
+                             ;==========================================================
+                             ; 'BX' remove break point command
+                             ;==========================================================
+                             ;
+fb32 : 8effff           [ 3] XSWI      ldx     #$FFFF      ; test for break point
+fb35 : bcdfe4           [ 7]           cmpx    Brkpnt
+fb38 : 270e             [ 3]           beq     XSWI1       ; no: end routine
+fb3a : bedfe4           [ 6]           ldx     Brkpnt      ; get address of break point
+fb3d : b6dfe6           [ 5]           lda     Brkpnt+2    ; get data
+fb40 : a784             [ 4]           sta     0,x         ; replace swi with data
+fb42 : 8effff           [ 3]           ldx     #$FFFF      ; clear break point flag
+fb45 : bfdfe4           [ 6]           stx     Brkpnt
+fb48 : 39               [ 5] XSWI1     rts
+                             ;
+                             ;==========================================================
+                             ; 'MM' Memory move command
+                             ;==========================================================
+                             ;
+fb49 : 327c             [ 5] MEMMOVE   leas    -4,s        ; Reserve stack space
+fb4b : bdf952           [ 8]           jsr     IN4HEX      ; Get source address
+fb4e : 2926             [ 3]           bvs     MEMMOVE2    ; Test for valid address
+fb50 : afe4             [ 5]           stx     0,s         ; Save source address
+fb52 : bdf8f7           [ 8]           jsr     OUT1S       ; Print a space
+fb55 : bdf952           [ 8]           jsr     IN4HEX      ; Get destination address
+fb58 : 291c             [ 3]           bvs     MEMMOVE2    ; Test for valid address
+fb5a : af62             [ 6]           stx     2,s         ; Save destination address
+fb5c : bdf8f7           [ 8]           jsr     OUT1S       ; Print another space
+fb5f : bdf952           [ 8]           jsr     IN4HEX      ; Get byte count
+fb62 : 2912             [ 3]           bvs     MEMMOVE2    ; Test for valid address
+fb64 : 1f12             [ 6]           tfr     x,y
+fb66 : aee4             [ 5] MEMMOVE1  ldx     0,s
+fb68 : a680             [ 6]           lda     ,x+ 
+fb6a : afe4             [ 5]           stx     0,s
+fb6c : ae62             [ 6]           ldx     2,s
+fb6e : a780             [ 6]           sta     ,x+ 
+fb70 : af62             [ 6]           stx     2,s
+fb72 : 313f             [ 5]           leay    -1,y
+fb74 : 26f0             [ 3]           bne     MEMMOVE1
+fb76 : 3264             [ 5] MEMMOVE2  leas    4,s
+fb78 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; 'SW' find data pattern command
+                             ;==========================================================
+                             ;
+fb79 : 7fefcc           [ 7] FINDWORD  clr     SrchMode
+fb7c : 7aefcc           [ 7]           dec     SrchMode    ; Set search mode to word
+fb7f : 327a             [ 5]           leas    -6,s        ; reserve stack space
+fb81 : 2005             [ 3]           bra     FINDDATA
+                             ;
+                             ;==========================================================
+                             ; 'SB' find byte data pattern command
+                             ;==========================================================
+                             ;
+fb83 : 7fefcc           [ 7] FINDBYTE  clr     SrchMode    ; Set search mode to byte
+fb86 : 327b             [ 5]           leas    -5,s
+                             ;
+fb88 : bdf952           [ 8] FINDDATA  jsr     IN4HEX      ; get beginning memory address
+fb8b : 2951             [ 3]           bvs     FIND6       ; Test for valid address
+fb8d : bdf8f7           [ 8]           jsr     OUT1S       ; print a space
+fb90 : afe4             [ 5]           stx     0,s         ; save beginning address
+fb92 : bdf952           [ 8]           jsr     IN4HEX      ; get ending memory address
+fb95 : 2947             [ 3]           bvs     FIND6       ; Test for valid address
+fb97 : bdf8f7           [ 8]           jsr     OUT1S       ; print a space
+fb9a : af62             [ 6]           stx     2,s         ; save ending address
+fb9c : 7defcc           [ 7]           tst     SrchMode
+fb9f : 2713             [ 3]           beq     FIND2   
+                             ;
+fba1 : bdf952           [ 8]           jsr     IN4HEX      ; get data pattern
+fba4 : 2938             [ 3]           bvs     FIND6       ; Test for valid address
+fba6 : af64             [ 6]           stx     4,s         ; save data pattern
+fba8 : aee4             [ 5]           ldx     0,s         ; get beginning address
+fbaa : 10ae84           [ 6] FIND1     ldy     0,x         ; get data pointed to by 'x'
+fbad : 10ac64           [ 8]           cmpy    4,s         ; compare memory with pattern
+fbb0 : 261f             [ 3]           bne     FIND5       ; no: continue search
+fbb2 : 2012             [ 3]           bra     FIND4   
+                             ;
+fbb4 : bdf93d           [ 8] FIND2     jsr     IN2HEX      ; get data pattern
+fbb7 : 2925             [ 3]           bvs     FIND6       ; Test for valid address
+fbb9 : a764             [ 5]           sta     4,s         ; save data pattern
+fbbb : bdf8f7           [ 8]           jsr     OUT1S       ; print a space
+fbbe : aee4             [ 5]           ldx     0,s         ; get beginning address
+fbc0 : a684             [ 4] FIND3     lda     0,x         ; get data pointed to by 'x'
+fbc2 : a164             [ 5]           cmpa    4,s         ; compare memory with pattern
+fbc4 : 260b             [ 3]           bne     FIND5       ; no: continue search
+                             ;
+fbc6 : bdf8ec           [ 8] FIND4     jsr     PCRLF       ; print a crlf
+fbc9 : bdf986           [ 8]           jsr     OUT4HEX     ; print address
+fbcc : bdf8e2           [ 8]           jsr     INCHEK      ; test for break
+fbcf : 260d             [ 3]           bne     FIND6       ; yes: end
+fbd1 : 3001             [ 5] FIND5     leax    1,x         ; point to next memory location
+fbd3 : ac62             [ 7]           cmpx    2,s         ; check for end of search
+fbd5 : 2707             [ 3]           beq     FIND6       ; no: continue search
+fbd7 : 7defcc           [ 7]           tst     SrchMode
+fbda : 27e4             [ 3]           beq     FIND3
+fbdc : 20cc             [ 3]           bra     FIND1
+                             ;
+fbde : 7defcc           [ 7] FIND6     tst     SrchMode
+fbe1 : 2702             [ 3]           beq     FIND7
+fbe3 : 3261             [ 5]           leas    1,s
+fbe5 : 3265             [ 5] FIND7     leas    5,s         ; restore stack
+fbe7 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; 'AA' examine/change accumulator 'a'
+                             ;==========================================================
+                             ;
+fbe8 : c601             [ 2] CHGA      ldb     #1
+fbea : 200a             [ 3]           bra     CHGABCD
+                             ;
+                             ;==========================================================
+                             ; 'AB' examine/change accumulator 'b'
+                             ;==========================================================
+                             ;
+fbec : c602             [ 2] CHGB      ldb     #2
+fbee : 2006             [ 3]           bra     CHGABCD
+                             ;
+                             ;==========================================================
+                             ; 'CC' examine/change condition codes register
+                             ;==========================================================
+                             ;
+fbf0 : c600             [ 2] CHGC      ldb     #0
+fbf2 : 2002             [ 3]           bra     CHGABCD
+                             ;
+                             ;==========================================================
+                             ; 'DP' examine/change direct page register
+                             ;==========================================================
+                             ;
+fbf4 : c603             [ 2] CHGD      ldb     #3
+fbf6 : a6c5             [ 5] CHGABCD   lda     b,u         ; get direct page register
+fbf8 : 3404             [ 6]           pshs    b
+fbfa : bdf973           [ 8]           jsr     OUT2HA      ; print it
+fbfd : bdf8f7           [ 8]           jsr     OUT1S       ; print a space
+fc00 : bdf93d           [ 8]           jsr     IN2HEX      ; get data
+fc03 : 2905             [ 3]           bvs     CHABCD1     ; Check for valid data
+fc05 : 3504             [ 6]           puls    b
+fc07 : a7c5             [ 5]           sta     b,u         ; store data
+fc09 : 39               [ 5]           rts
+                             ;
+fc0a : 3261             [ 5] CHABCD1   leas    1,s
+fc0c : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; 'PC' examine/change program counter
+                             ;==========================================================
+                             ;
+fc0d : c60a             [ 2] CHGP      ldb     #10
+fc0f : 200a             [ 3]           bra     CHGPUXY
+                             ;
+                             ;==========================================================
+                             ; 'US' examine/change user stack
+                             ;==========================================================
+                             ;
+fc11 : c608             [ 2] CHGU      ldb     #8
+fc13 : 2006             [ 3]           bra     CHGPUXY
+                             ;
+                             ;==========================================================
+                             ; 'IX' examine/change x register
+                             ;==========================================================
+                             ;
+fc15 : c604             [ 2] CHGX      ldb     #4
+fc17 : 2002             [ 3]           bra     CHGPUXY
+                             ;
+                             ;==========================================================
+                             ; 'IY' examine/change y register
+                             ;==========================================================
+                             ;
+fc19 : c606             [ 2] CHGY      ldb     #6
+fc1b : aec5             [ 6] CHGPUXY   ldx     b,u         ; get 'y' register
+fc1d : 3404             [ 6]           pshs    b
+fc1f : bdf986           [ 8]           jsr     OUT4HEX     ; print it
+fc22 : bdf8f7           [ 8]           jsr     OUT1S
+fc25 : bdf952           [ 8]           jsr     IN4HEX      ; get new data
+fc28 : 2905             [ 3]           bvs     CHPUXY1     ; Check for valid data
+fc2a : 3504             [ 6]           puls    b
+fc2c : afc5             [ 6]           stx     b,u         ; store data
+fc2e : 39               [ 5]           rts
+                             ;
+fc2f : 3261             [ 5] CHPUXY1   leas    1,s
+fc31 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; 'MD' - dump memory command
+                             ;==========================================================
+                             ;
+fc32 : bdf952           [ 8] MEMDUMP   jsr     IN4HEX
+fc35 : 2916             [ 3]           bvs     MDUMPX      ; Check for valid data
+fc37 : 8d15             [ 7] MDUMP1    bsr     DUMP1
+fc39 : bdf8ec           [ 8]           jsr     PCRLF
+fc3c : bdf8d4           [ 8]           jsr     INCH
+fc3f : 812e             [ 2]           cmpa    #'.'
+fc41 : 27f4             [ 3]           beq     MDUMP1
+fc43 : 812c             [ 2]           cmpa    #','
+fc45 : 2606             [ 3]           bne     MDUMPX
+fc47 : 3089fe00         [ 8]           leax    -512,x
+fc4b : 20ea             [ 3]           bra     MDUMP1
+fc4d : 39               [ 5] MDUMPX    rts
+                             ;
+                             ;------------------------------------------------
+                             ; dump 256 bytes of memory in hex and ascii
+                             ;
+fc4e : 3410             [ 7] DUMP1     pshs    x
+fc50 : 8eff3d           [ 3]           ldx     #DHDRMSG    ; get header message for dump
+fc53 : bdf908           [ 8]           jsr     PSTRNG
+fc56 : c645             [ 2]           ldb     #69
+fc58 : 862d             [ 2]           lda     #'-'
+fc5a : bdf8f9           [ 8] DUMP2     jsr     OUTCH
+fc5d : 5a               [ 2]           decb
+fc5e : 26fa             [ 3]           bne     DUMP2
+fc60 : 3510             [ 7]           puls    x
+fc62 : 8610             [ 2]           lda     #16         ; number of lines
+fc64 : 3402             [ 6] DUMP3     pshs    a
+fc66 : bdf8ec           [ 8]           jsr     PCRLF
+fc69 : bfefca           [ 6]           stx     numtmp
+fc6c : 8eefca           [ 3]           ldx     #numtmp
+fc6f : bdf97b           [ 8]           jsr     OUT4HS      ; print address
+fc72 : beefca           [ 6]           ldx     numtmp
+fc75 : c610             [ 2]           ldb     #16         ; number of bytes
+fc77 : 3410             [ 7]           pshs    x
+fc79 : bdf97f           [ 8] DUMP4     jsr     OUT2HS      ; print 2 hex
+fc7c : 5a               [ 2]           decb                ; done with line
+fc7d : 26fa             [ 3]           bne     DUMP4
+fc7f : 3510             [ 7]           puls    x
+fc81 : c610             [ 2]           ldb     #16         ; number of bytes
+fc83 : a684             [ 4] DUMP5     lda     0,x         ; get character
+fc85 : 817e             [ 2]           cmpa    #$7E
+fc87 : 2e04             [ 3]           bgt     DUMP6 
+fc89 : 811f             [ 2]           cmpa    #$1F        ; is it control
+fc8b : 2e02             [ 3]           bgt     DUMP7 
+fc8d : 862e             [ 2] DUMP6     lda     #'.'        ; dummy
+fc8f : bdf8f9           [ 8] DUMP7     jsr     OUTCH
+fc92 : 3001             [ 5]           leax    1,x
+fc94 : 5a               [ 2]           decb                ; done with line
+fc95 : 26ec             [ 3]           bne     DUMP5
+fc97 : 3502             [ 6]           puls    a
+fc99 : 4a               [ 2]           deca                ; done with dump
+fc9a : 26c8             [ 3]           bne     DUMP3
+fc9c : 39               [ 5] DUMP8     rts
+                             ;
+                             ;==========================================================
+                             ; MR command - memory repeat read command
+                             ;
+fc9d : bdf952           [ 8] MEMRRD    jsr     IN4HEX      ; get addrress
+fca0 : 293e             [ 3]           bvs     MEMRR4
+fca2 : 1f12             [ 6]           tfr     x,y
+fca4 : bdf8f7           [ 8]           jsr     OUT1S
+fca7 : a6a4             [ 4]           lda     0,y
+fca9 : bdf973           [ 8]           jsr     OUT2HA
+fcac : 1f89             [ 6] MEMRR0    tfr     a,b         ; set old byte
+fcae : a6a4             [ 4] MEMRR1    lda     0,y
+fcb0 : 3404             [ 6]           pshs    b
+fcb2 : a1e0             [ 6]           cmpa    ,s+         ; new byte same as old
+fcb4 : 2712             [ 3]           beq     MEMRR2
+fcb6 : 1f89             [ 6]           tfr     a,b         ; save as old data
+fcb8 : bdf8ec           [ 8]           jsr     PCRLF       ; start new line
+fcbb : 1f21             [ 6]           tfr     y,x
+fcbd : bdf986           [ 8]           jsr     OUT4HEX     ; output the address
+fcc0 : bdf8f7           [ 8]           jsr     OUT1S
+fcc3 : 1f98             [ 6]           tfr     b,a
+fcc5 : bdf973           [ 8]           jsr     OUT2HA      ; output the data
+fcc8 : bdf8e2           [ 8] MEMRR2    jsr     INCHEK      ; check for input
+fccb : 27e1             [ 3]           beq     MEMRR1
+fccd : bdf8d4           [ 8]           jsr     INCH
+fcd0 : 812e             [ 2]           cmpa    #'.'
+fcd2 : 2604             [ 3]           bne     MEMRR3
+fcd4 : 3121             [ 5]           leay    1,y
+fcd6 : 20d4             [ 3]           bra     MEMRR0
+fcd8 : 812c             [ 2] MEMRR3    cmpa    #','
+fcda : 2604             [ 3]           bne     MEMRR4
+fcdc : 313f             [ 5]           leay    -1,y
+fcde : 20cc             [ 3]           bra     MEMRR0
+fce0 : 39               [ 5] MEMRR4    rts
+                             ;
+                             ;==========================================================
+                             ; MW command - memory repeat write command
+                             ;
+fce1 : bdf952           [ 8] MEMRWR    jsr     IN4HEX      ; get addrress
+fce4 : 2912             [ 3]           bvs     MEMRW2
+fce6 : bdf8f7           [ 8]           jsr     OUT1S       ; output a space
+fce9 : bdf93d           [ 8]           jsr     IN2HEX      ; get the byte
+fcec : 290a             [ 3]           bvs     MEMRW2
+fcee : a784             [ 4] MEMRW1    sta     0,x
+fcf0 : bdf8e2           [ 8]           jsr     INCHEK      ; check for input
+fcf3 : 27f9             [ 3]           beq     MEMRW1
+fcf5 : bdf8d4           [ 8]           jsr     INCH
+fcf8 : 39               [ 5] MEMRW2    rts
+                             ;
+                             ;==========================================================
+                             ; 'MT' memory test command
+                             ;==========================================================
+                             ;
+fcf9 : bdf952           [ 8] MEMTST    jsr     IN4HEX
+fcfc : 2952             [ 3]           bvs     MEMT6
+fcfe : bfefcd           [ 6]           stx     LowTemp
+fd01 : bdf8f7           [ 8]           jsr     OUT1S
+fd04 : bdf952           [ 8]           jsr     IN4HEX 
+fd07 : 2947             [ 3]           bvs     MEMT6
+fd09 : bfefcf           [ 6]           stx     HighTemp
+fd0c : bdf8f7           [ 8]           jsr     OUT1S
+fd0f : cc0000           [ 3]           ldd     #0
+fd12 : fdefd1           [ 6]           std     Ctr
+fd15 : fdefd3           [ 6]           std     InxMSB
+fd18 : beefcd           [ 6] MEMT1     ldx     LowTemp
+fd1b : 8d27             [ 7] MEMT2     bsr     MEMT5
+fd1d : a780             [ 6]           sta     ,x+ 
+fd1f : bcefcf           [ 7]           cmpx    HighTemp
+fd22 : 26f7             [ 3]           bne     MEMT2
+fd24 : beefcd           [ 6]           ldx     LowTemp
+fd27 : 8d1b             [ 7] MEMT3     bsr     MEMT5
+fd29 : a884             [ 4]           eora    0,x
+fd2b : 2624             [ 3]           bne     MEMT7  
+fd2d : 3001             [ 5] MEMT4     leax    1,x
+fd2f : bcefcf           [ 7]           cmpx    HighTemp
+fd32 : 26f3             [ 3]           bne     MEMT3
+fd34 : 862b             [ 2]           lda     #$2B
+fd36 : bdf8f9           [ 8]           jsr     OUTCH
+fd39 : 7cefd1           [ 7]           inc     Ctr
+fd3c : bdf8e2           [ 8]           jsr     INCHEK      ; check for input
+fd3f : 27d7             [ 3]           beq     MEMT1
+fd41 : 7ef8d4           [ 4]           jmp     INCH
+                             ;
+fd44 : bfefd3           [ 6] MEMT5     stx     InxMSB
+fd47 : b6efd3           [ 5]           lda     InxMSB
+fd4a : bbefd4           [ 5]           adda    InxLSB
+fd4d : bbefd1           [ 5]           adda    Ctr
+fd50 : 39               [ 5] MEMT6     rts
+                             ;
+fd51 : b7efd2           [ 5] MEMT7     sta     Store
+fd54 : bdf8ec           [ 8]           jsr     PCRLF
+fd57 : 8eefd1           [ 3]           ldx     #Ctr
+fd5a : bdf97f           [ 8]           jsr     OUT2HS
+fd5d : bdf97f           [ 8]           jsr     OUT2HS
+fd60 : bdf97b           [ 8]           jsr     OUT4HS
+fd63 : beefd3           [ 6]           ldx     InxMSB
+fd66 : 20c5             [ 3]           bra     MEMT4 
+                             ;
+                             ;-----------------------------------------------------------------------;
+                             ;   This is a modification of a 16 by 16 unsigned integer
+                             ;   multiply routine for the 68hc11 written by:
+                             ;       D. G. Weiss   1/23/87
+                             ;       MCU Technical Marketing
+                             ;       Motorola Microprocessor Group
+                             ;       Oak Hill, TX
+                             ;
+                             ;   Modified by:
+                             ;       Don Coates, October 15, 2004
+                             ;
+                             ;  Enter with (x) = multiplicand -> Mpycnd
+                             ;           (a:b) = multiplier   -> Mpyler
+                             ; Exit with (d:x) = Prduct       <- Product
+                             ;-----------------------------------------------------------------------;
+                             ;
+fd68 : bfefac           [ 6] M16by16   stx     Mpycnd      ; Save Mpycnd (d) & Mpycnd+1 (c)
+fd6b : fdefb0           [ 6]           std     Mpyler      ; Save Mpyler (b) & Mpyler+1 (a)
+fd6e : 3408             [ 6]           pshs    dp
+fd70 : 86ef             [ 2]           lda     #$EF
+fd72 : 1f8b             [ 6]           tfr     a,dp
+fd74 : cc0000           [ 3]           ldd     #0
+fd77 : ddb4             [ 5]           std     <Prduct
+fd79 : ddb6             [ 5]           std     <Prduct+2
+                             ;
+                             ; Use the 8 by 8 multiply 'MUL'
+                             ; to return a 16 bit Result.
+                             ;
+                             ; a+b times c+d = ac + ad + bc + bd
+                             ;
+fd7b : 96ad             [ 4]           lda     <Mpycnd+1   ; (c)
+fd7d : d6b1             [ 4]           ldb     <Mpyler+1   ; (a)
+fd7f : 3d               [11]           mul                 ; (ac)
+fd80 : ddb6             [ 5]           std     <Prduct+2   ; (Prduct = ac)
+fd82 : 96ac             [ 4]           lda     <Mpycnd     ; (d)
+fd84 : d6b1             [ 4]           ldb     <Mpyler+1   ; (a)
+fd86 : 3d               [11]           mul                 ; (ad)
+fd87 : d3b5             [ 6]           addd    <Prduct+1   ; (ac + ad)
+fd89 : ddb5             [ 5]           std     <Prduct+1   ; (Prduct = ac + ad)
+fd8b : 96ad             [ 4]           lda     <Mpycnd+1   ; (c)
+fd8d : d6b0             [ 4]           ldb     <Mpyler     ; (b)
+fd8f : 3d               [11]           mul                 ; (bc)
+fd90 : d3b5             [ 6]           addd    <Prduct+1   ; (bc + ad)
+fd92 : ddb5             [ 5]           std     <Prduct+1   ; (Prduct = ac + ad + bc)
+fd94 : 96ac             [ 4]           lda     <Mpycnd     ; (d)
+fd96 : d6b0             [ 4]           ldb     <Mpyler     ; (b)
+fd98 : 3d               [11]           mul                 ; (bd)
+fd99 : d3b4             [ 6]           addd    <Prduct     ; (bd + bc)
+fd9b : ddb4             [ 5]           std     <Prduct
+fd9d : 9eb6             [ 5]           ldx     <Prduct+2
+fd9f : 3588             [ 8]           puls    dp,pc       ; (Prduct = ac + ad + bc + bd)
+                             ;
+                             ;==========================================================
+                             ; 32 by 16 bit divide routine
+                             ;
+                             ; enter with (d:x) = numerator    -> Num
+                             ;              (y) = denominator  -> Denom
+                             ;    exit with (d) = dividend     <- Result
+                             ;              (y) = remainder    <- Num
+                             ;==========================================================
+                             ;
+fda1 : fdefac           [ 6] D32by16   std     Num
+fda4 : bfefae           [ 6]           stx     Num+2
+fda7 : 10bfefb2         [ 7]           sty     Denom+2
+fdab : 3408             [ 6]           pshs    dp
+fdad : 86ef             [ 2]           lda     #$EF
+fdaf : 1f8b             [ 6]           tfr     a,dp
+fdb1 : cc0000           [ 3]           ldd     #0
+fdb4 : ddb0             [ 5]           std     <Denom
+fdb6 : ddb4             [ 5]           std     <Result
+fdb8 : ddb6             [ 5]           std     <Result+2
+fdba : 97b8             [ 4]           sta     <Count
+                             ;
+fdbc : 8d45             [ 7] Divide    bsr     Comp        ; numerator < or = denominator.
+fdbe : 2524             [ 3]           blo     Diglp
+fdc0 : 0db0             [ 6]           tst     <Denom      ; overflow?
+fdc2 : 2b10             [ 3]           bmi     NoShft
+fdc4 : 08b3             [ 6]           asl     <Denom+3    ; multiply denominator by 2
+fdc6 : 09b2             [ 6]           rol     <Denom+2
+fdc8 : 09b1             [ 6]           rol     <Denom+1
+fdca : 09b0             [ 6]           rol     <Denom
+fdcc : 0cb8             [ 6]           inc     <Count      ; keep track.
+fdce : 20ec             [ 3]           bra     Divide
+                             ;
+fdd0 : 8d31             [ 7] Digits    bsr     Comp        ; Num > or = Denom?
+fdd2 : 2510             [ 3]           blo     Diglp
+fdd4 : dcae             [ 5] NoShft    ldd     <Num+2      ; numerator = numerator - denominator.
+fdd6 : 93b2             [ 6]           subd    <Denom+2
+fdd8 : ddae             [ 5]           std     <Num+2
+fdda : dcac             [ 5]           ldd     <Num
+fddc : d2b1             [ 4]           sbcb    <Denom+1
+fdde : 92b0             [ 4]           sbca    <Denom
+fde0 : ddac             [ 5]           std     <Num
+fde2 : 0cb7             [ 6]           inc     <Result+3   ; binary digit to dividend.
+fde4 : 0db8             [ 6] Diglp     tst     <Count      ; check for done.
+fde6 : 2714             [ 3]           beq     DivXit
+fde8 : 04b0             [ 6]           lsr     <Denom      ; Divide denominator by 2.
+fdea : 06b1             [ 6]           ror     <Denom+1
+fdec : 06b2             [ 6]           ror     <Denom+2
+fdee : 06b3             [ 6]           ror     <Denom+3
+fdf0 : 0ab8             [ 6]           dec     <Count      ; update normalisation Count.
+fdf2 : 08b7             [ 6]           asl     <Result+3   ; multiply dividend by 2.
+fdf4 : 09b6             [ 6]           rol     <Result+2
+fdf6 : 09b5             [ 6]           rol     <Result+1
+fdf8 : 09b4             [ 6]           rol     <Result
+fdfa : 20d4             [ 3]           bra     Digits
+                             ;
+fdfc : dcb6             [ 5] DivXit    ldd     <Result+2   ; Return with low word of Result
+fdfe : 109eae           [ 6]           ldy     <Num+2
+fe01 : 3588             [ 8]           puls    dp,pc
+                             ;
+fe03 : dcae             [ 5] Comp      ldd     <Num+2      ; compare numerator to denominator.
+fe05 : 93b2             [ 6]           subd    <Denom+2
+fe07 : dcac             [ 5]           ldd     <Num
+fe09 : d2b1             [ 4]           sbcb    <Denom+1
+fe0b : 92b0             [ 4]           sbca    <Denom
+fe0d : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; decimal i/o routine borrowed from flex. this was easier
+                             ; than trying to write them from scratch.
+                             ;
+                             ;----------------------------------------------------------
+                             ; OUTDECM
+                             ;
+                             ; output decimal number
+                             ;
+                             ; entry - x = address of 16-bit unsigned binary number
+                             ;
+fe0e : 7fefc7           [ 7] OUTDECM   clr     digcnt      ; clear digit Count
+fe11 : 8604             [ 2]           lda     #4          ; get loop Count
+fe13 : b7efc8           [ 5]           sta     lopcnt      ; set loop counter
+fe16 : ec84             [ 5]           ldd     0,x         ; get binary number into a & b
+fe18 : 8efe4c           [ 3]           ldx     #BINCON     ; get constant into x
+fe1b : 8d0c             [ 7] OUTDC1    bsr     OUTDC2      ; convert to decimal
+fe1d : 3002             [ 5]           leax    2,x         ; increment x by 2
+fe1f : 7aefc8           [ 7]           dec     lopcnt      ; loop counter zero ?
+fe22 : 26f7             [ 3]           bne     OUTDC1      ; no, loop until zero
+fe24 : 1f98             [ 6]           tfr     b,a         ; move digit to a register
+fe26 : 7ef965           [ 4]           jmp     OUTHR       ; output hex right digit
+                             ;
+                             ; convert binary to decimal
+                             ;
+fe29 : 7fefc9           [ 7] OUTDC2    clr     itrcnt      ; clear iteration counter
+fe2c : 10a384           [ 7] OUTDC3    cmpd    0,x         ; constant > binary number ?
+fe2f : 2507             [ 3]           bcs     OUTDC4      ; yes, print digit
+fe31 : a384             [ 6]           subd    0,x         ; subtract from binary number
+fe33 : 7cefc9           [ 7]           inc     itrcnt      ; increment iteration Count
+fe36 : 20f4             [ 3]           bra     OUTDC3      ; do loop again
+                             ;
+                             ; output digit or space
+                             ;
+fe38 : 3402             [ 6] OUTDC4    pshs    a           ; save a on stack
+fe3a : b6efc9           [ 5]           lda     itrcnt      ; iteration counter zero ?
+fe3d : 2605             [ 3]           bne     OUTDC5      ; no. output next digit
+fe3f : 7defc7           [ 7]           tst     digcnt      ; first digit been output ?
+fe42 : 2706             [ 3]           beq     OUTDC6      ; no, exit, otherwise output next digit
+                             ;
+                             ; output digit
+                             ;
+fe44 : 7cefc7           [ 7] OUTDC5    inc     digcnt      ; increment digit Count
+fe47 : bdf965           [ 8]           jsr     OUTHR       ; output hex right digit
+fe4a : 3582             [ 8] OUTDC6    puls    a,pc        ; restore a and return
+                             ;
+fe4c : 2710                  BINCON    fdb     10000
+fe4e : 03e8                            fdb     1000
+fe50 : 0064                            fdb     100
+fe52 : 000a                            fdb     10
+                             ;
+                             ;----------------------------------------------------------
+                             ; INDECM
+                             ;
+                             ; input decimal number
+                             ;
+                             ; gets unsigned decimal number.
+                             ; number is returned in d.
+                             ;
+fe54 : 7fefca           [ 7] INDECM    clr     numtmp
+fe57 : 7fefcb           [ 7]           clr     numtmp+1
+fe5a : bdf8ce           [ 8] INDEC1    jsr     INCHE       ; get next character
+fe5d : 810d             [ 2]           cmpa    #CR         ; was it a CR?
+fe5f : 271d             [ 3]           beq     INDEC2      ; exit if not numeric
+fe61 : 8130             [ 2]           cmpa    #'0'
+fe63 : 2519             [ 3]           blo     INDEC2
+fe65 : 8139             [ 2]           cmpa    #'9'        ; numeric ?
+fe67 : 2215             [ 3]           bhi     INDEC2      ; if not, exit
+fe69 : 840f             [ 2]           anda    #$0F        ; mask off ms 4-bits
+fe6b : 3402             [ 6]           pshs    a           ; save b & a on stack
+fe6d : fcefca           [ 6]           ldd     numtmp      ; get number
+fe70 : 8e000a           [ 3]           ldx     #10
+fe73 : bdfd68           [ 8]           jsr     M16by16
+fe76 : 3504             [ 6]           puls    b
+fe78 : 3a               [ 3]           abx
+fe79 : bfefca           [ 6]           stx     numtmp
+fe7c : 20dc             [ 3]           bra     INDEC1      ; loop until seperator found
+                             ;
+                             ; non-alphanumeric character found
+                             ;
+fe7e : fcefca           [ 6] INDEC2    ldd     numtmp      ; get hex number in d
+fe81 : 39               [ 5]           rts
+                             ;
+                             ;==========================================================
+                             ; keyboard command jump table
+                             ;==========================================================
+                             ;
+                             ; Register commands
+                             ;
+fe82 : 4141                  CMDTBL    fcc     'AA'        ; register a
+fe84 : fbe8                            fdb     CHGA
+fe86 : 4142                            fcc     'AB'        ; register b
+fe88 : fbec                            fdb     CHGB
+fe8a : 4343                            fcc     'CC'        ; register c
+fe8c : fbf0                            fdb     CHGC
+fe8e : 4450                            fcc     'DP'        ; register d (direct page)
+fe90 : fbf4                            fdb     CHGD
+fe92 : 5043                            fcc     'PC'        ; register p
+fe94 : fc0d                            fdb     CHGP
+fe96 : 5553                            fcc     'US'        ; register u
+fe98 : fc11                            fdb     CHGU
+fe9a : 4958                            fcc     'IX'        ; register x
+fe9c : fc15                            fdb     CHGX
+fe9e : 4959                            fcc     'IY'        ; register y
+fea0 : fc19                            fdb     CHGY
+fea2 : 4452                            fcc     'DR'        ; dump registers
+fea4 : f9cf                            fdb     DUMPREG
+                             ;
+                             ; Memory commands
+                             ;
+fea6 : 4d44                            fcc     'MD'        ; memory dump
+fea8 : fc32                            fdb     MEMDUMP
+feaa : 4d45                            fcc     'ME'        ; memory edit
+feac : f992                            fdb     MEMCHG
+feae : 4d46                            fcc     'MF'        ; memory fill
+feb0 : faeb                            fdb     MEMFILL
+feb2 : 4d4c                            fcc     'ML'        ; memory load of s19 data
+feb4 : fa1e                            fdb     MLOAD
+feb6 : 4d4d                            fcc     'MM'        ; Memory move
+feb8 : fb49                            fdb     MEMMOVE
+feba : 4d52                            fcc     'MR'        ; memory repeat read command
+febc : fc9d                            fdb     MEMRRD
+febe : 4d53                            fcc     'MS'        ; Memory save of S19 data
+fec0 : fa81                            fdb     MSAVE
+fec2 : 4d54                            fcc     'MT'        ; Memory test
+fec4 : fcf9                            fdb     MEMTST
+fec6 : 4d57                            fcc     'MW'        ; memory repeat write command
+fec8 : fce1                            fdb     MEMRWR
+feca : 5342                            fcc     'SB'        ; Search for a byte
+fecc : fb83                            fdb     FINDBYTE
+fece : 5357                            fcc     'SW'        ; Search for a word
+fed0 : fb79                            fdb     FINDWORD
+                             ;
+                             ; Program execution commands
+                             ;
+fed2 : 4252                            fcc     'BR'        ; set break point
+fed4 : fb10                            fdb     BREAK
+fed6 : 4258                            fcc     'BX'        ; break point remove
+fed8 : fb32                            fdb     XSWI
+feda : 4550                            fcc     'EP'        ; Execute use program
+fedc : f8b6                            fdb     EXEC
+fede : 4553                            fcc     'ES'        ; execute subroutine
+fee0 : f8bd                            fdb     JUMP
+fee2 : 474f                            fcc     'GO'        ; go to user program
+fee4 : f8c6                            fdb     GO
+fee6 : 5246                            fcc     'RF'        ; warm start SK*DOS or FLEX
+fee8 : cd03                            fdb     WARMS
+                             ;
+                             ; Floppy commands
+                             ;
+feea : 4642                            fcc     'FB'        ; floppy disk boot
+feec : f5b9                            fdb     FDBOOT
+feee : 464c                            fcc     'FL'        ; load file from floppy
+fef0 : f50f                            fdb     FDFILELD
+fef2 : 4652                            fcc     'FR'        ; read Sector from floppy
+fef4 : f4b2                            fdb     FDREAD
+fef6 : 4657                            fcc     'FW'        ; write Sector to floppy
+fef8 : f4cf                            fdb     FDWRITE
+                             ;
+                             ; Hard drive commands
+                             ;
+fefa : 4842                            fcc     'HB'        ; hard drive boot
+fefc : f015                            fdb     HDBOOT
+fefe : 4843                            fcc     'HC'        ; Get hard drive configuration
+ff00 : f3c7                            fdb     HDCONFIG
+ff02 : 4850                            fcc     'HP'        ; Input HD CHS parameters
+ff04 : f395                            fdb     InputCHS
+ff06 : 484c                            fcc     'HL'        ; Load file from hard drive
+ff08 : f270                            fdb     HDFILELD
+ff0a : 4852                            fcc     'HR'        ; read hd Sector
+ff0c : f1e1                            fdb     HDREAD
+ff0e : 4857                            fcc     'HW'        ; write hd Sector
+ff10 : f243                            fdb     HDWRITE
+ff12 =                       TBLEND    equ     *           ; mark end of table
+                             ;
+                             ; printable messages
+                             ;
+ff12 : 0d0a                  Prompt    fcb     CR,LF
+ff14 : 3e                              fcc     ">"
+ff15 : 04                              fcb     EOT
+                             ;
+ff16 : 20504320202053..      REGSMSG   fcc     " PC   SP   US   IX"
+ff28 : 20202049592020..                fcc     "   IY  AA AB DP CC"
+ff3a : 0d0a04                CRLFMSG   fcb     CR,LF,EOT
+                             ;
+ff3d : 41646472202b30..      DHDRMSG   fcc     "Addr +0 +1 +2 +3 +4 +5 +6 "
+ff57 : 2b37202b38202b..                fcc     "+7 +8 +9 +A +B +C +D +E +F"
+ff71 : 207c2d2d2d2d20..                fcc     " |---- ASCII ---|"
+ff82 : 0d0a04                          fcb     CR,LF,EOT
+                             ;
+ff85 : 53393033303030..      S9Msg     fcc     "S9030000FC"
+ff8f : 04                              fcb     EOT
+                             ;
+                             ; mc6809 vectors
+                             ;
+ff90 : f8c8                  RAMVECT   fdb     RETI
+ff92 : f8c8                            fdb     RETI        ; swi3
+ff94 : f8c8                            fdb     RETI        ; swi2
+ff96 : f8c8                            fdb     RETI        ; firq
+ff98 : f8c8                            fdb     RETI        ; irq
+ff9a : fa01                            fdb     SWIE        ; swi
+ff9c : ffff                            fdb     $FFFF
+ff9e : ffff                            fdb     $FFFF
+                             ;
+ffa0 : 6e9fdfc2         [ 8] v1        jmp     [swi3v]
+ffa4 : 6e9fdfc4         [ 8] v2        jmp     [swi2v]
+ffa8 : 6e9fdfc6         [ 8] v3        jmp     [firq]
+ffac : 6e9fdfc8         [ 8] v4        jmp     [irq]
+ffb0 : 6e9fdfca         [ 8] v5        jmp     [swiv]
+                             ;
+ffb4 =                       Code2End  equ     *
+                             ;
+                                       if NOICE=0
+                             ;
+fff0 =                                 org     ROMBase+$FF0
+                             ;
+fff0 : 0000                            fdb     0
+fff2 : ffa0                            fdb     v1          ; swi3
+fff4 : ffa4                            fdb     v2          ; swi2
+fff6 : ffa8                            fdb     v3          ; firq
+fff8 : ffac                            fdb     v4          ; irq
+fffa : ffb0                            fdb     v5          ; swi
+fffc : f828                            fdb     START       ; nmi
+fffe : f828                            fdb     START       ; restart
+                             ;
+                                       endif
+                             ;
+fff0 =                                 end     START
+                             
+No errors in pass 2.
