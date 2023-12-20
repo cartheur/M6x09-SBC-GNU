@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <Global>
+    <DebugInfo>
+      <ExcludeTraceRange enabled="0" values="" />
+    </DebugInfo>
+    <ConsoleDump filename="ConsoleDump.txt" />
+    <ProcessorBoard CPU="6809" Board="GENERIC" />
+    <Trace Enabled="0" Path="TraceFile.txt" UseCircularBufferTraceFile="0" />
+    <WinchesterInterruptDelay value="0" />
+    <AllowMultipleSector value="0" />
+    <ProcessorJumpers J_150_9600="0" J_600_4800="0" J_LOW_HIGH="0" E000_RAM="0" E800_RAM="0" F000_RAM="0" E000_ROM="0" E800_ROM="0" F000_ROM="0" />
+    <ProcessorSwitch SW1B="0" SW1C="0" SW1D="0" />
+  </Global>
+  <config6809>
+    <romfile filename="ROMS/PT69-5_PTMON_V1.5_FLEX_J2-2_OS9_J2-1_OS9.stx" />
+    <BoardConfiguration>
+      <Board ID="0" Type="CONS"     Addr="E004" Size="04" GUID="" IRQ="1" />
+      <Board ID="1" Type="FD2"      Addr="E014" Size="08" GUID="" IRQ="1" />
+      <Board ID="2" Type="M146818"  Addr="E01C" Size="04" GUID="" IRQ="1" />
+      <Board ID="3" Type="SDCARD"   Addr="E008" Size="08" GUID="" IRQ="1" />
+    </BoardConfiguration>
+    <SDCardDisks>
+      <Disk ID="0" Path="DISKS/pt69_dsk_files/pt69-5a.bin" Format="RAW" />
+    </SDCardDisks>
+    <KeyBoardMap>
+      <Delete Normal="^J" Shifted="" Control="" Alt="" Both="" />
+      <DownArrow Normal="^C" Shifted="" Control="^N" Alt="" Both="" />
+      <End Normal="^]" Shifted="" Control="^B" Alt="" Both="" />
+      <Home Normal="^]" Shifted="" Control="^T" Alt="" Both="" />
+      <Insert Normal="^P" Shifted="" Control="" Alt="" Both="" />
+      <LeftArrow Normal="^S" Shifted="" Control="^A" Alt="" Both="" />
+      <PageDown Normal="^V" Shifted="" Control="" Alt="" Both="" />
+      <PageUp Normal="^R" Shifted="" Control="" Alt="" Both="" />
+      <RightArrow Normal="^F" Shifted="" Control="^G" Alt="" Both="" />
+      <UpArrow Normal="^E" Shifted="" Control="^Y" Alt="" Both="" />
+    </KeyBoardMap>
+  </config6809>
+</configuration>

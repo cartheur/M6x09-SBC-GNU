@@ -1,0 +1,48 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <Global>
+    <DebugInfo>
+      <ExcludeTraceRange enabled="0" values="" />
+    </DebugInfo>
+    <ConsoleDump filename="ConsoleDump.txt" />
+    <ProcessorBoard CPU="6809" Board="MP_09" ProcessorSpeed="0" LimitProcessorSpeed="0" />
+    <Trace Enabled="0" Path="TraceFile.txt" UseCircularBufferTraceFile="0" />
+    <WinchesterInterruptDelay value="0" />
+    <AllowMultipleSector value="0" />
+    <ProcessorJumpers J_150_9600="1" J_600_4800="0" J_LOW_HIGH="1" E000_RAM="0" E800_RAM="1" F000_RAM="1" E000_ROM="0" E800_ROM="0" F000_ROM="0" />
+    <ProcessorSwitch SW1B="0" SW1C="1" SW1D="1" />
+    <ConsoleColors>
+      <NormalBackgroundColor value="black" />
+      <NormalForegroundColor value="bright green" />
+      <ReverseBackgroundColor value="white" />
+      <ReverseForegroundColor value="black" />
+    </ConsoleColors>
+  </Global>
+  <config6809>
+    <romfile filename="ROMS/SWTPC6809_SDCARD.STX;ROMS/WDISK_SDCARD_AT_E060.STX" />
+    <BoardConfiguration>
+      <Board ID="0" Type="CONS" Addr="E004" Size="04" GUID="" IRQ="1" />
+      <Board ID="1" Type="FD2" Addr="E014" Size="08" GUID="" IRQ="1" />
+      <Board ID="2" Type="SDCARD" Addr="E060" Size="08" GUID="" IRQ="0" />
+      <Board ID="3" Type="M146818" Addr="E05C" Size="04" GUID="" IRQ="1" />
+    </BoardConfiguration>
+    <FloppyDisks>
+      <Disk ID="0" Path="DISKS\SET6818.IMA" Format="FLEX_IMA" />
+    </FloppyDisks>
+    <SDCardDisks>
+      <Disk ID="0" Path="DISKS\SWTPC_6809_E060_IMAGE_00-03.bin" Format="RAW" />
+    </SDCardDisks>
+    <KeyBoardMap>
+      <Delete Normal="^J" Shifted="" Control="" Alt="" Both="" />
+      <DownArrow Normal="^C" Shifted="" Control="^N" Alt="" Both="" />
+      <End Normal="^]" Shifted="" Control="^B" Alt="" Both="" />
+      <Home Normal="^]" Shifted="" Control="^T" Alt="" Both="" />
+      <Insert Normal="^P" Shifted="" Control="" Alt="" Both="" />
+      <LeftArrow Normal="^S" Shifted="" Control="^A" Alt="" Both="" />
+      <PageDown Normal="^V" Shifted="" Control="" Alt="" Both="" />
+      <PageUp Normal="^R" Shifted="" Control="" Alt="" Both="" />
+      <RightArrow Normal="^F" Shifted="" Control="^G" Alt="" Both="" />
+      <UpArrow Normal="^E" Shifted="" Control="^Y" Alt="" Both="" />
+    </KeyBoardMap>
+  </config6809>
+</configuration>

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <Global>
+    <DebugInfo>
+      <ExcludeTraceRange enabled="0" values="" />
+    </DebugInfo>
+    <ConsoleDump filename="ConsoleDump.txt" />
+    <ProcessorBoard CPU="6800" Board="MP_2" EnableScratchPadRAM="1" Allow00NOP="1" />
+    <Trace Enabled="0" Path="TraceFile.txt" UseCircularBufferTraceFile="0" />
+    <WinchesterInterruptDelay value="0" />
+    <CoreDump filename="coredump_{date}_{time}.bin" />
+    <AllowMultipleSector value="1" />
+  </Global>
+  <config6800>
+    <romfile filename="ROMS/SWTBUG_JustTheROM.STX" />
+    <BoardConfiguration>
+      <Board ID="0" Type="CONS" Addr="8000" Size="08" GUID="" IRQ="1" />
+      <Board ID="1" Type="FD2" Addr="8014" Size="08" GUID="" IRQ="1" />
+    </BoardConfiguration>
+    <FloppyDisks>
+      <Disk ID="0" Path="DISKS/FLEX10.DSK" Format="MINIFLEX" />
+    </FloppyDisks>
+    <KeyBoardMap>
+      <Delete Normal="^J" Shifted="" Control="" Alt="" Both="" />
+      <DownArrow Normal="^X" Shifted="" Control="^N" Alt="" Both="" />
+      <End Normal="^]" Shifted="" Control="^B" Alt="" Both="" />
+      <Home Normal="^]" Shifted="" Control="^T" Alt="" Both="" />
+      <Insert Normal="^P" Shifted="" Control="" Alt="" Both="" />
+      <LeftArrow Normal="^S" Shifted="" Control="^A" Alt="" Both="" />
+      <PageDown Normal="^V" Shifted="" Control="" Alt="" Both="" />
+      <PageUp Normal="^R" Shifted="" Control="" Alt="" Both="" />
+      <RightArrow Normal="^D" Shifted="" Control="^G" Alt="" Both="" />
+      <UpArrow Normal="^E" Shifted="" Control="^Y" Alt="" Both="" />
+    </KeyBoardMap>
+  </config6800>
+</configuration>

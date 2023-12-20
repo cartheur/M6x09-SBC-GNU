@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <Global>
+    <DebugInfo>
+      <ExcludeTraceRange enabled="0" values="" />
+    </DebugInfo>
+    <ConsoleDump filename="ConsoleDump.txt" />
+    <ProcessorBoard CPU="6800" Board="680b" EnableScratchPadRAM="0" Allow00NOP="1" />
+    <Trace Enabled="0" Path="TraceFile.txt" UseCircularBufferTraceFile="0" />
+    <WinchesterInterruptDelay value="0" />
+    <CoreDump filename="coredump_{date}_{time}.bin" />
+    <AllowMultipleSector value="1" />
+  </Global>
+  <config6800>
+    <romfile filename="ROMS/680b_PROM.S1" />
+    <BoardConfiguration>
+      <Board ID="0" Type="ALTAIR680bSTRAPS" Addr="F002" Size="01" GUID="" IRQ="0" />
+      <Board ID="1" Type="CONS" Addr="F000" Size="02" GUID="" IRQ="1" />
+      <Board ID="2" Type="UIO" Addr="F006" Size="0A" GUID="" IRQ="1" FD3712="1" BaudRate="19200" PortName="COM2" DataBits="8" Parity="None" StopBits="1" />
+    </BoardConfiguration>
+    <FloppyDisks>
+      <Disk ID="0" Path="DISKS/FLEX1 for Altair 680.DSK" Format="MINIFLEX" />
+      <Disk ID="1" Path="DISKS/FLEX1_BLANK.DSK" Format="MINIFLEX" />
+    </FloppyDisks>
+    <KeyBoardMap>
+      <Delete Normal="^J" Shifted="" Control="" Alt="" Both="" />
+      <DownArrow Normal="^X" Shifted="" Control="^N" Alt="" Both="" />
+      <End Normal="^]" Shifted="" Control="^B" Alt="" Both="" />
+      <Home Normal="^]" Shifted="" Control="^T" Alt="" Both="" />
+      <Insert Normal="^P" Shifted="" Control="" Alt="" Both="" />
+      <LeftArrow Normal="^S" Shifted="" Control="^A" Alt="" Both="" />
+      <PageDown Normal="^V" Shifted="" Control="" Alt="" Both="" />
+      <PageUp Normal="^R" Shifted="" Control="" Alt="" Both="" />
+      <RightArrow Normal="^D" Shifted="" Control="^G" Alt="" Both="" />
+      <UpArrow Normal="^E" Shifted="" Control="^Y" Alt="" Both="" />
+    </KeyBoardMap>
+  </config6800>
+</configuration>
